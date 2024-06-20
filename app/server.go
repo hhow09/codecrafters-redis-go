@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+
 	// Uncomment this block to pass the first stage
 	"net"
 	"os"
@@ -18,9 +20,41 @@ func main() {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
-	_, err = l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
+		go handlePing(conn)
+
 	}
+}
+
+// expeting *1\r\n$4\r\nping\r\n
+func handlePing(conn net.Conn) error {
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	typmsg, err := r.ReadByte()
+	if err != nil {
+		return fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
+	typ := checkDataType(typmsg)
+	if typ != typeArray {
+		conn.Write([]byte("-ERR expecting type array  \r\n"))
+		return nil
+	}
+	arr, err := handleRESPArray(r)
+	if err != nil {
+		return fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
+	for _, v := range arr {
+		switch v {
+		case "PING":
+			conn.Write([]byte("+PONG\r\n"))
+		default:
+			conn.Write([]byte("-ERR unknown command " + arr[0] + "\r\n"))
+		}
+	}
+	return nil
 }
