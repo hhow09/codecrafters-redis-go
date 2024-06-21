@@ -17,6 +17,7 @@ const (
 	typeSimpleString = '+'
 	typeBulkString   = '$'
 	typeArray        = '*'
+	typeError        = '-'
 )
 
 func handleRESPArray(r *bufio.Reader) ([]string, error) {
@@ -77,4 +78,8 @@ func checkDataType(b byte) byte {
 	default:
 		return 0
 	}
+}
+
+func newErrorMSG(msg string) []byte {
+	return []byte(fmt.Sprintf("%cERR %s\r\n", typeError, msg))
 }
