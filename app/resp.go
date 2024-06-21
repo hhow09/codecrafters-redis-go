@@ -88,6 +88,10 @@ func newBulkString(msg string) []byte {
 	return []byte(fmt.Sprintf("%c%d\r\n%s\r\n", typeBulkString, len(msg), msg))
 }
 
+func newNullBulkString() []byte {
+	return []byte(fmt.Sprintf("%c-1\r\n", typeBulkString))
+}
+
 func newErrorMSG(msg string) []byte {
 	return []byte(fmt.Sprintf("%cERR %s\r\n", typeError, msg))
 }

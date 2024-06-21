@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"strconv"
+	"time"
 
 	// Uncomment this block to pass the first stage
 	"net"
@@ -66,10 +68,22 @@ func handler(conn net.Conn, db *db) error {
 		// https://redis.io/docs/latest/commands/set/
 		// [SET, key, value]
 		case "SET":
-			if len(arr) < 3 {
-				conn.Write(newErrorMSG("expecting 3 arguments"))
+			switch len(arr) {
+			case 5:
+				switch arr[3] {
+				// PX milliseconds -- Set the specified expire time, in milliseconds (a positive integer).
+				case "px":
+					exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
+					if err != nil {
+						conn.Write(newErrorMSG("invalid expire time"))
+						return nil
+					}
+					db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
+				}
+			default:
+				db.set(arr[1], arr[2])
 			}
-			db.set(arr[1], arr[2])
+
 			conn.Write(newSimpleString("OK"))
 		// [GET, key]
 		case "GET":
@@ -77,7 +91,11 @@ func handler(conn net.Conn, db *db) error {
 				conn.Write(newErrorMSG("expecting 2 arguments"))
 			}
 			value := db.get(arr[1])
-			conn.Write(newBulkString(value))
+			if value == "" {
+				conn.Write(newNullBulkString())
+			} else {
+				conn.Write(newBulkString(value))
+			}
 		default:
 			conn.Write([]byte(newErrorMSG("unknown command " + arr[0])))
 		}
