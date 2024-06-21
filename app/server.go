@@ -12,10 +12,21 @@ import (
 	"os"
 )
 
+const (
+	RoleMaster = "master"
+	RoleSlave  = "slave"
+)
+
+var role = RoleMaster
+
 func main() {
 	p := flag.String("port", "6379", "port to bind to")
+	replicaOf := flag.String("replicaof", "", "replicaof host port")
 	flag.Parse()
 
+	if *replicaOf != "" {
+		role = RoleSlave
+	}
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
 
@@ -103,7 +114,7 @@ func handler(conn net.Conn, db *db) error {
 		case "INFO":
 			if len(arr) > 1 {
 				if arr[1] == "replication" {
-					conn.Write(newBulkString("role:master"))
+					conn.Write(newBulkString(fmt.Sprintf("role:%s\n", role)))
 				}
 			} else {
 				// TODO
