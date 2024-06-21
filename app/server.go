@@ -64,7 +64,7 @@ func handler(conn net.Conn, db *db) error {
 				conn.Write(newErrorMSG("expecting 2 arguments"))
 				return nil
 			}
-			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(arr[1]), arr[1])))
+			conn.Write(newBulkString(arr[1]))
 		// https://redis.io/docs/latest/commands/set/
 		// [SET, key, value]
 		case "SET":
