@@ -17,9 +17,8 @@ const (
 	RoleSlave  = "slave"
 )
 
-var role = RoleMaster
-
 func main() {
+	role := RoleMaster
 	p := flag.String("port", "6379", "port to bind to")
 	replicaOf := flag.String("replicaof", "", "replicaof host port")
 	flag.Parse()
@@ -30,24 +29,50 @@ func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
 
-	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%s", *p))
+	s := newServer("localhost", *p, newDB(), role)
+	s.Start()
+}
+
+type server struct {
+	host string
+	port string
+	db   *db
+	// replication
+	role         string
+	masterReplid string
+	masterOffset uint64
+}
+
+func newServer(host, port string, db *db, role string) *server {
+	return &server{
+		host: host,
+		port: port,
+		db:   db,
+
+		role:         role,
+		masterReplid: generateRandomString(40),
+	}
+}
+
+func (s *server) Start() {
+	l, err := net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
 	if err != nil {
-		fmt.Println("Failed to bind to port 6379")
+		err := fmt.Errorf("Error listening: %v", err.Error())
+		fmt.Println(err)
 		os.Exit(1)
 	}
-	db := newDB()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			fmt.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go handler(conn, db)
+		go s.handler(conn)
 	}
 }
 
 // expeting *1\r\n$4\r\nping\r\n
-func handler(conn net.Conn, db *db) error {
+func (s *server) handler(conn net.Conn) error {
 	defer conn.Close()
 	for {
 		r := bufio.NewReader(conn)
@@ -93,10 +118,10 @@ func handler(conn net.Conn, db *db) error {
 						conn.Write(newErrorMSG("invalid expire time"))
 						return nil
 					}
-					db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
+					s.db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
 				}
 			default:
-				db.set(arr[1], arr[2])
+				s.db.set(arr[1], arr[2])
 			}
 
 			conn.Write(newSimpleString("OK"))
@@ -105,7 +130,7 @@ func handler(conn net.Conn, db *db) error {
 			if len(arr) < 2 {
 				conn.Write(newErrorMSG("expecting 2 arguments"))
 			}
-			value := db.get(arr[1])
+			value := s.db.get(arr[1])
 			if value == "" {
 				conn.Write(newNullBulkString())
 			} else {
@@ -114,7 +139,7 @@ func handler(conn net.Conn, db *db) error {
 		case "INFO":
 			if len(arr) > 1 {
 				if arr[1] == "replication" {
-					conn.Write(newBulkString(fmt.Sprintf("role:%s\n", role)))
+					conn.Write(newBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset)))
 				}
 			} else {
 				// TODO

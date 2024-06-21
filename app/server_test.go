@@ -14,9 +14,9 @@ func TestPing(t *testing.T) {
 
 	client.SetDeadline(time.Now().Add(2 * time.Second))
 	defer client.Close()
-	db := newDB()
+	s := newServer("localhost", "8080", newDB(), "master")
 	go func() {
-		handler(server, db)
+		s.handler(server)
 	}()
 
 	_, err := client.Write([]byte("*1\r\n$4\r\nPING\r\n"))
@@ -32,9 +32,9 @@ func TestEcho(t *testing.T) {
 
 	client.SetDeadline(time.Now().Add(2 * time.Second))
 	defer client.Close()
-	db := newDB()
+	s := newServer("localhost", "8080", newDB(), "master")
 	go func() {
-		handler(server, db)
+		s.handler(server)
 	}()
 
 	_, err := client.Write([]byte("*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n"))
