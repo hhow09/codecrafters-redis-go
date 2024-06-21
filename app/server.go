@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"strconv"
 	"time"
@@ -12,10 +13,13 @@ import (
 )
 
 func main() {
+	p := flag.String("port", "6379", "port to bind to")
+	flag.Parse()
+
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
 
-	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%s", *p))
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
