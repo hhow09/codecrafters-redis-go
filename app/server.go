@@ -100,6 +100,14 @@ func handler(conn net.Conn, db *db) error {
 			} else {
 				conn.Write(newBulkString(value))
 			}
+		case "INFO":
+			if len(arr) > 1 {
+				if arr[1] == "replication" {
+					conn.Write(newBulkString("role:master"))
+				}
+			} else {
+				// TODO
+			}
 		default:
 			conn.Write([]byte(newErrorMSG("unknown command " + arr[0])))
 		}
