@@ -18,18 +18,19 @@ func main() {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
+	db := newDB()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			fmt.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go handler(conn)
+		go handler(conn, db)
 	}
 }
 
 // expeting *1\r\n$4\r\nping\r\n
-func handler(conn net.Conn) error {
+func handler(conn net.Conn, db *db) error {
 	defer conn.Close()
 	for {
 		r := bufio.NewReader(conn)
@@ -50,14 +51,33 @@ func handler(conn net.Conn) error {
 			conn.Write(newErrorMSG("empty array"))
 		}
 		switch arr[0] {
+		// https://redis.io/docs/latest/commands/ping/
+		// [PING]
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
+			conn.Write(newSimpleString("PONG"))
+		// https://redis.io/docs/latest/commands/echo/
+		// [ECHO, message]
 		case "ECHO":
 			if len(arr) < 2 {
 				conn.Write(newErrorMSG("expecting 2 arguments"))
 				return nil
 			}
 			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(arr[1]), arr[1])))
+		// https://redis.io/docs/latest/commands/set/
+		// [SET, key, value]
+		case "SET":
+			if len(arr) < 3 {
+				conn.Write(newErrorMSG("expecting 3 arguments"))
+			}
+			db.set(arr[1], arr[2])
+			conn.Write(newSimpleString("OK"))
+		// [GET, key]
+		case "GET":
+			if len(arr) < 2 {
+				conn.Write(newErrorMSG("expecting 2 arguments"))
+			}
+			value := db.get(arr[1])
+			conn.Write(newBulkString(value))
 		default:
 			conn.Write([]byte(newErrorMSG("unknown command " + arr[0])))
 		}

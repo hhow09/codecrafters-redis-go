@@ -80,6 +80,14 @@ func checkDataType(b byte) byte {
 	}
 }
 
+func newSimpleString(msg string) []byte {
+	return []byte(fmt.Sprintf("%c%s\r\n", typeSimpleString, msg))
+}
+
+func newBulkString(msg string) []byte {
+	return []byte(fmt.Sprintf("%c%d\r\n%s\r\n", typeBulkString, len(msg), msg))
+}
+
 func newErrorMSG(msg string) []byte {
 	return []byte(fmt.Sprintf("%cERR %s\r\n", typeError, msg))
 }
