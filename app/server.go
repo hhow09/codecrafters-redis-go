@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	// Uncomment this block to pass the first stage
@@ -23,21 +24,32 @@ func main() {
 	replicaOf := flag.String("replicaof", "", "replicaof host port")
 	flag.Parse()
 
-	if *replicaOf != "" {
+	var rpc *replicaConf
+	switch *replicaOf {
+	case "":
+		s := newServer("localhost", *p, newDB(), role)
+		s.Start()
+	default:
 		role = RoleSlave
+		sl := strings.Split(*replicaOf, " ")
+		masterHost, masterPort := sl[0], sl[1]
+		rpc = &replicaConf{
+			masterHost: masterHost,
+			masterPort: masterPort,
+		}
+		rs, err := newReplicaServer("localhost", *p, newDB(), rpc)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		rs.Start()
 	}
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
-
-	s := newServer("localhost", *p, newDB(), role)
-	s.Start()
 }
 
 type server struct {
-	host string
-	port string
-	db   *db
-	// replication
+	host         string
+	port         string
+	db           *db
 	role         string
 	masterReplid string
 	masterOffset uint64
@@ -45,12 +57,13 @@ type server struct {
 
 func newServer(host, port string, db *db, role string) *server {
 	return &server{
-		host: host,
-		port: port,
-		db:   db,
-
-		role:         role,
+		host:         host,
+		port:         port,
+		db:           db,
 		masterReplid: generateRandomString(40),
+		masterOffset: 0,
+
+		role: role,
 	}
 }
 

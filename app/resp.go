@@ -92,6 +92,14 @@ func newNullBulkString() []byte {
 	return []byte(fmt.Sprintf("%c-1\r\n", typeBulkString))
 }
 
+func newArray(arr [][]byte) []byte {
+	prefix := []byte(fmt.Sprintf("%c%d\r\n", typeArray, len(arr)))
+	for _, v := range arr {
+		prefix = append(prefix, v...)
+	}
+	return prefix
+}
+
 func newErrorMSG(msg string) []byte {
 	return []byte(fmt.Sprintf("%cERR %s\r\n", typeError, msg))
 }
