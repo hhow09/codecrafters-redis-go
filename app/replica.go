@@ -75,5 +75,13 @@ func (s *replicaServer) sendHandshake() error {
 	}
 
 	// TODO: The replica sends PSYNC to the master (Next stages)
+	_, err = conn.Write(newArray([][]byte{newBulkString("PSYNC"), newBulkString("?"), newBulkString("-1")}))
+	if err != nil {
+		return fmt.Errorf("Error writing to connection: %s", err.Error())
+	}
+	_, err = bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
 	return nil
 }
