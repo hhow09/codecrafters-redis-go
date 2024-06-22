@@ -10,10 +10,6 @@ import (
 // ref: https://redis.io/docs/latest/develop/reference/protocol-spec/
 
 const (
-	linebreak = "\r\n"
-)
-
-const (
 	typeSimpleString = '+'
 	typeBulkString   = '$'
 	typeArray        = '*'

@@ -12,11 +12,12 @@ import (
 func TestPing(t *testing.T) {
 	client, server := net.Pipe()
 
-	client.SetDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
 	s := newServer("localhost", "8080", newDB(), "master")
 	go func() {
-		s.handler(server)
+		err := s.handler(server)
+		require.NoError(t, err)
 	}()
 
 	_, err := client.Write([]byte("*1\r\n$4\r\nPING\r\n"))
@@ -30,11 +31,12 @@ func TestPing(t *testing.T) {
 func TestEcho(t *testing.T) {
 	client, server := net.Pipe()
 
-	client.SetDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
 	s := newServer("localhost", "8080", newDB(), "master")
 	go func() {
-		s.handler(server)
+		err := s.handler(server)
+		require.NoError(t, err)
 	}()
 
 	_, err := client.Write([]byte("*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n"))

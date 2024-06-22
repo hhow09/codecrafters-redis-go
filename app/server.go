@@ -30,7 +30,6 @@ func main() {
 		s := newServer("localhost", *p, newDB(), role)
 		s.Start()
 	default:
-		role = RoleSlave
 		sl := strings.Split(*replicaOf, " ")
 		masterHost, masterPort := sl[0], sl[1]
 		rpc = &replicaConf{
@@ -80,7 +79,12 @@ func (s *server) Start() {
 			fmt.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go s.handler(conn)
+		go func(conn net.Conn) {
+			if err := s.handler(conn); err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+		}(conn)
 	}
 }
 
@@ -95,7 +99,9 @@ func (s *server) handler(conn net.Conn) error {
 		}
 		typ := checkDataType(typmsg)
 		if typ != typeArray {
-			conn.Write(newErrorMSG("expecting type array"))
+			if _, err := conn.Write(newErrorMSG("expecting type array")); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 			return nil
 		}
 		arr, err := handleRESPArray(r)
@@ -103,21 +109,29 @@ func (s *server) handler(conn net.Conn) error {
 			return fmt.Errorf("Error reading from connection: %s", err.Error())
 		}
 		if len(arr) == 0 {
-			conn.Write(newErrorMSG("empty array"))
+			if _, err := conn.Write(newErrorMSG("empty array")); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 		}
 		switch arr[0] {
 		// https://redis.io/docs/latest/commands/ping/
 		// [PING]
 		case "PING":
-			conn.Write(newSimpleString("PONG"))
+			if _, err := conn.Write(newSimpleString("PONG")); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 		// https://redis.io/docs/latest/commands/echo/
 		// [ECHO, message]
 		case "ECHO":
 			if len(arr) < 2 {
-				conn.Write(newErrorMSG("expecting 2 arguments"))
+				if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 				return nil
 			}
-			conn.Write(newBulkString(arr[1]))
+			if _, err := conn.Write(newBulkString(arr[1])); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 		// https://redis.io/docs/latest/commands/set/
 		// [SET, key, value]
 		case "SET":
@@ -128,7 +142,10 @@ func (s *server) handler(conn net.Conn) error {
 				case "px":
 					exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
 					if err != nil {
-						conn.Write(newErrorMSG("invalid expire time"))
+						_, err := conn.Write(newErrorMSG("invalid expire time"))
+						if err != nil {
+							return fmt.Errorf("Error writing to connection: %s", err.Error())
+						}
 						return nil
 					}
 					s.db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
@@ -137,32 +154,47 @@ func (s *server) handler(conn net.Conn) error {
 				s.db.set(arr[1], arr[2])
 			}
 
-			conn.Write(newSimpleString("OK"))
+			_, err := conn.Write(newSimpleString("OK"))
+			if err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 		// [GET, key]
 		case "GET":
 			if len(arr) < 2 {
-				conn.Write(newErrorMSG("expecting 2 arguments"))
+				if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 			}
 			value := s.db.get(arr[1])
 			if value == "" {
-				conn.Write(newNullBulkString())
+				_, err := conn.Write(newNullBulkString())
+				if err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 			} else {
-				conn.Write(newBulkString(value))
+				_, err := conn.Write(newBulkString(value))
+				if err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 			}
 		case "INFO":
 			if len(arr) > 1 {
 				if arr[1] == "replication" {
-					conn.Write(newBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset)))
+					if _, err := conn.Write(newBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset))); err != nil {
+						return fmt.Errorf("Error writing to connection: %s", err.Error())
+					}
+
 				}
-			} else {
-				// TODO
 			}
+			// TODO
 		// REPLCONF <option> <value> <option> <value> ...
 		// This command is used by a replica in order to configure the replication process before starting it with the SYNC command.
 		// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
 		case "REPLCONF":
 			if len(arr) != 3 {
-				conn.Write(newErrorMSG("expecting 3 arguments"))
+				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 				return nil
 			}
 			switch arr[1] {
@@ -171,10 +203,14 @@ func (s *server) handler(conn net.Conn) error {
 			case "capa":
 				// TODO
 			}
-			conn.Write(newSimpleString("OK"))
+			if _, err := conn.Write(newSimpleString("OK")); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 		case "PSYNC":
 			if len(arr) != 3 {
-				conn.Write(newErrorMSG("expecting 3 arguments"))
+				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 				return nil
 			}
 			// Send a FULLRESYNC reply in the specific case of a full resynchronization.
@@ -184,7 +220,10 @@ func (s *server) handler(conn net.Conn) error {
 				return fmt.Errorf("Error writing to connection: %s", err.Error())
 			}
 		default:
-			conn.Write([]byte(newErrorMSG("unknown command " + arr[0])))
+			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
+
 		}
 	}
 }
