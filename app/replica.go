@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -46,9 +47,33 @@ func (s *replicaServer) sendHandshake() error {
 	if err != nil {
 		return fmt.Errorf("Error writing to connection: %s", err.Error())
 	}
-	return nil
+	_, err = bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
+	// REPLCONF <option> <value> <option> <value> ...
+	// ref: https://redis.io/docs/latest/commands/replconf/
+	// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L2685
+	// Set the slave port, so that Master's INFO command can list the slave listening port correctly.
+	_, err = conn.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("listening-port"), newBulkString(s.port)}))
+	if err != nil {
+		return fmt.Errorf("Error writing to connection: %s", err.Error())
+	}
+	_, err = bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
+	// Inform the master of our (slave) capabilities.
+	// EOF / PSYNC2
+	_, err = conn.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("capa"), newBulkString("psync2")}))
+	if err != nil {
+		return fmt.Errorf("Error writing to connection: %s", err.Error())
+	}
+	_, err = bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
 
-	// TODO: The replica sends REPLCONF twice to the master (Next stages)
 	// TODO: The replica sends PSYNC to the master (Next stages)
-
+	return nil
 }

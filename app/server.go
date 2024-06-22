@@ -157,6 +157,21 @@ func (s *server) handler(conn net.Conn) error {
 			} else {
 				// TODO
 			}
+		// REPLCONF <option> <value> <option> <value> ...
+		// This command is used by a replica in order to configure the replication process before starting it with the SYNC command.
+		// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
+		case "REPLCONF":
+			if len(arr) != 3 {
+				conn.Write(newErrorMSG("expecting 3 arguments"))
+				return nil
+			}
+			switch arr[1] {
+			case "listening-port":
+				// TODO
+			case "capa":
+				// TODO
+			}
+			conn.Write(newSimpleString("OK"))
 		default:
 			conn.Write([]byte(newErrorMSG("unknown command " + arr[0])))
 		}
