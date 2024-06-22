@@ -172,6 +172,17 @@ func (s *server) handler(conn net.Conn) error {
 				// TODO
 			}
 			conn.Write(newSimpleString("OK"))
+		case "PSYNC":
+			if len(arr) != 3 {
+				conn.Write(newErrorMSG("expecting 3 arguments"))
+				return nil
+			}
+			// Send a FULLRESYNC reply in the specific case of a full resynchronization.
+			// https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L674
+			_, err := conn.Write((newSimpleString(fmt.Sprintf("FULLRESYNC %s %d", s.masterReplid, s.masterOffset))))
+			if err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
 		default:
 			conn.Write([]byte(newErrorMSG("unknown command " + arr[0])))
 		}
