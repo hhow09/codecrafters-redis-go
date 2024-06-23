@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -55,6 +56,7 @@ type server struct {
 	role         string
 	masterReplid string
 	masterOffset uint64
+	replicas     map[string]net.Conn
 }
 
 func newServer(host, port string, db *db, role string) *server {
@@ -65,7 +67,8 @@ func newServer(host, port string, db *db, role string) *server {
 		masterReplid: generateRandomString(40),
 		masterOffset: 0,
 
-		role: role,
+		role:     role,
+		replicas: make(map[string]net.Conn, 0),
 	}
 }
 
@@ -95,7 +98,8 @@ func (s *server) Start() {
 func (s *server) handler(conn net.Conn) error {
 	defer conn.Close()
 	for {
-		r := bufio.NewReader(conn)
+		fullCmdBuf := bytes.NewBuffer(nil)
+		r := bufio.NewReader(io.TeeReader(conn, fullCmdBuf)) //
 		typmsg, err := r.ReadByte()
 		if err != nil {
 			if err == io.EOF {
@@ -205,7 +209,9 @@ func (s *server) handler(conn net.Conn) error {
 			}
 			switch arr[1] {
 			case "listening-port":
-				// TODO
+				// id: host-port
+				id := fmt.Sprintf("%s-%s", conn.RemoteAddr(), arr[2])
+				s.replicas[id] = conn
 			case "capa":
 				// TODO
 			}
@@ -246,7 +252,24 @@ func (s *server) handler(conn net.Conn) error {
 			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
 				return fmt.Errorf("Error writing to connection: %s", err.Error())
 			}
+		}
+		if s.role == RoleMaster {
+			switch arr[0] {
+			case "SET", "GET":
+				s.broadcast(fullCmdBuf.Bytes())
+				fullCmdBuf.Reset()
+			}
+		}
 
+	}
+}
+
+// Broadcast the command to all replicas
+func (s *server) broadcast(msg []byte) {
+	for _, rplc := range s.replicas {
+		_, err := rplc.Write(msg)
+		if err != nil {
+			fmt.Println("Error writing to replica: ", err.Error())
 		}
 	}
 }
