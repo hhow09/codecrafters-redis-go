@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 	// Uncomment this block to pass the first stage
 	"net"
 	"os"
+
+	"github.com/codecrafters-io/redis-starter-go/app/persistence"
 )
 
 const (
@@ -95,6 +98,9 @@ func (s *server) handler(conn net.Conn) error {
 		r := bufio.NewReader(conn)
 		typmsg, err := r.ReadByte()
 		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
 			return fmt.Errorf("Error reading from connection: %s", err.Error())
 		}
 		typ := checkDataType(typmsg)
@@ -219,6 +225,23 @@ func (s *server) handler(conn net.Conn) error {
 			if err != nil {
 				return fmt.Errorf("Error writing to connection: %s", err.Error())
 			}
+
+			rdbFile := persistence.RDB{
+				Aux: &persistence.Aux{
+					Version: "7.2.0",
+					Bits:    64,
+					Ctime:   1829289061,
+					UsedMem: 2965639168,
+				},
+			}
+			b, err := rdbFile.MarshalRDB()
+			if err != nil {
+				return fmt.Errorf("Error marshalling RDB file: %s", err.Error())
+			}
+			if _, err := conn.Write(newRDBFile(b)); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
+
 		default:
 			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
 				return fmt.Errorf("Error writing to connection: %s", err.Error())

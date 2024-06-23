@@ -99,3 +99,8 @@ func newArray(arr [][]byte) []byte {
 func newErrorMSG(msg string) []byte {
 	return []byte(fmt.Sprintf("%cERR %s\r\n", typeError, msg))
 }
+
+func newRDBFile(f []byte) []byte {
+	prefix := []byte(fmt.Sprintf("%c%d\r\n", typeBulkString, len(f)))
+	return append(prefix, f...)
+}
