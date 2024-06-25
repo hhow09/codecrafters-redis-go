@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -67,16 +66,6 @@ type server struct {
 	replicationBacklog *replication.ReplicatinoBacklog
 }
 
-type replicaStore struct {
-	mu    sync.Mutex
-	store map[string]*replica
-}
-
-type replica struct {
-	conn net.Conn
-	buf  [][]byte // replication buffer, https://redis.io/docs/latest/operate/oss_and_stack/management/replication/
-}
-
 func newServer(host, port string, db *db, role string) *server {
 	return &server{
 		host:         host,
@@ -95,7 +84,7 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 
 	l, err := net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
 	if err != nil {
-		err := fmt.Errorf("Error listening: %v", err.Error())
+		err := fmt.Errorf("error listening: %v", err.Error())
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -106,7 +95,7 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
-				fmt.Println("Error accepting connection: ", err.Error())
+				fmt.Println("error accepting connection: ", err.Error())
 				os.Exit(1)
 			}
 			go func(conn net.Conn) {
@@ -131,22 +120,22 @@ func (s *server) handler(conn net.Conn) error {
 			if err == io.EOF {
 				return nil
 			}
-			return fmt.Errorf("Error reading byte from connection: %s", err.Error())
+			return fmt.Errorf("error reading byte from connection: %s", err.Error())
 		}
 		typ := checkDataType(typmsg)
 		if typ != typeArray {
 			if _, err := conn.Write(newErrorMSG("expecting type array")); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 			return nil
 		}
 		arr, err := handleRESPArray(r)
 		if err != nil {
-			return fmt.Errorf("Error reading resp array from connection: %s", err.Error())
+			return fmt.Errorf("error reading resp array from connection: %s", err.Error())
 		}
 		if len(arr) == 0 {
 			if _, err := conn.Write(newErrorMSG("empty array")); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}
 		switch arr[0] {
@@ -168,12 +157,12 @@ func (s *server) handler(conn net.Conn) error {
 			if err := handleSet(conn, arr, s.db); err != nil {
 				return err
 			}
-			// store commands in replication buffer
 			if s.role == RoleMaster {
+				// store commands in replication buffer
 				s.replicationBacklog.InsertBacklog(newSetCmd(arr))
 				_, err := conn.Write(newSimpleString("OK"))
 				if err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
+					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 			}
 		// [GET, key]
@@ -185,7 +174,7 @@ func (s *server) handler(conn net.Conn) error {
 			if len(arr) > 1 {
 				if arr[1] == "replication" {
 					if _, err := conn.Write(newBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset))); err != nil {
-						return fmt.Errorf("Error writing to connection: %s", err.Error())
+						return fmt.Errorf("error writing to connection: %s", err.Error())
 					}
 
 				}
@@ -197,7 +186,7 @@ func (s *server) handler(conn net.Conn) error {
 		case "REPLCONF":
 			if len(arr) != 3 {
 				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
+					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 				return nil
 			}
@@ -208,14 +197,21 @@ func (s *server) handler(conn net.Conn) error {
 				s.replicationBacklog.AddReplica(id, conn)
 			case "capa":
 				// TODO
+			case "GETACK":
+				// store commands in replication buffer
+				s.replicationBacklog.InsertBacklog(newArray([][]byte{newBulkString(arr[0]), newBulkString(arr[1]), newBulkString(arr[2])}))
+				_, err := conn.Write(newSimpleString("OK"))
+				if err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
 			}
 			if _, err := conn.Write(newSimpleString("OK")); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		case "PSYNC":
 			if len(arr) != 3 {
 				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
+					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 				return nil
 			}
@@ -223,7 +219,7 @@ func (s *server) handler(conn net.Conn) error {
 			// https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L674
 			_, err := conn.Write((newSimpleString(fmt.Sprintf("FULLRESYNC %s %d", s.masterReplid, s.masterOffset))))
 			if err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 
 			rdbFile := persistence.RDB{
@@ -236,15 +232,15 @@ func (s *server) handler(conn net.Conn) error {
 			}
 			b, err := rdbFile.MarshalRDB()
 			if err != nil {
-				return fmt.Errorf("Error marshalling RDB file: %s", err.Error())
+				return fmt.Errorf("error marshalling RDB file: %s", err.Error())
 			}
 			if _, err := conn.Write(newRDBFile(b)); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 
 		default:
 			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}
 	}
@@ -252,7 +248,7 @@ func (s *server) handler(conn net.Conn) error {
 
 func handlePing(conn net.Conn) error {
 	if _, err := conn.Write(newSimpleString("PONG")); err != nil {
-		return fmt.Errorf("Error writing to connection: %s", err.Error())
+		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil
 }
@@ -260,17 +256,17 @@ func handlePing(conn net.Conn) error {
 func handleEcho(conn net.Conn, arr []string) error {
 	if len(arr) < 2 {
 		if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
-			return fmt.Errorf("Error writing to connection: %s", err.Error())
+			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 		return nil
 	}
 	if _, err := conn.Write(newBulkString(arr[1])); err != nil {
-		return fmt.Errorf("Error writing to connection: %s", err.Error())
+		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil
 }
 
-func handleSet(conn net.Conn, arr []string, db *db) error {
+func handleSet(conn io.Writer, arr []string, db *db) error {
 	switch len(arr) {
 	case 5:
 		switch arr[3] {
@@ -278,11 +274,10 @@ func handleSet(conn net.Conn, arr []string, db *db) error {
 		case "px":
 			exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
 			if err != nil {
-				_, werr := conn.Write(newErrorMSG("invalid expire time"))
-				if werr != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				if _, werr := conn.Write(newErrorMSG("invalid expire time")); werr != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
-				return fmt.Errorf("Error parsing expire time: %s", err.Error())
+				return fmt.Errorf("error parsing expire time: %s", err.Error())
 			}
 			db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
 		}
@@ -295,19 +290,17 @@ func handleSet(conn net.Conn, arr []string, db *db) error {
 func handleGet(conn net.Conn, arr []string, db *db) error {
 	if len(arr) < 2 {
 		if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
-			return fmt.Errorf("Error writing to connection: %s", err.Error())
+			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 	}
 	value := db.get(arr[1])
 	if value == "" {
-		_, err := conn.Write(newNullBulkString())
-		if err != nil {
-			return fmt.Errorf("Error writing to connection: %s", err.Error())
+		if _, err := conn.Write(newNullBulkString()); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 	} else {
-		_, err := conn.Write(newBulkString(value))
-		if err != nil {
-			return fmt.Errorf("Error writing to connection: %s", err.Error())
+		if _, err := conn.Write(newBulkString(value)); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 	}
 	return nil

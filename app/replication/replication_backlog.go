@@ -68,7 +68,6 @@ func (r *ReplicatinoBacklog) SendBacklog(stopC chan os.Signal) {
 			for id, rplc := range r.replicastore {
 				if len(rplc.buf) > 0 {
 					for rplc.buf != nil {
-						fmt.Printf("Sending backlog to replica %s : %v\n", id, string(bytes.Join(rplc.buf, nil)))
 						_, err := rplc.conn.Write(bytes.Join(rplc.buf, nil))
 						if err != nil {
 							fmt.Printf("Error writing to replica %s: %v \n", id, err.Error())

@@ -19,13 +19,15 @@ func TestHandshake(t *testing.T) {
 
 	rs, err := newReplicaServer("localhost", "8085", newDB(), &replicaConf{masterHost: "localhost", masterPort: masterPort})
 	require.NoError(t, err)
-	conn, err := rs.sendHandshake()
+	r, wc, err := rs.sendHandshake()
 	require.NoError(t, err)
-	require.NotNil(t, conn)
+	require.NotNil(t, r)
+	require.NotNil(t, wc)
+	defer wc.Close()
 
-	_, err = conn.Write(newArray([][]byte{newBulkString("PING")}))
+	_, err = wc.Write(newArray([][]byte{newBulkString("PING")}))
 	require.NoError(t, err)
-	s, err := bufio.NewReader(conn).ReadString('\n')
+	s, err := r.ReadString('\n')
 	require.NoError(t, err)
 	require.Equal(t, string(newSimpleString("PONG")), s)
 }
@@ -50,6 +52,7 @@ func TestPropogate(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = masterConn.Write(newArray([][]byte{newBulkString("SET"), newBulkString("key2"), newBulkString("value2")}))
+	require.NoError(t, err)
 	_, err = masterConn.Write(newArray([][]byte{newBulkString("SET"), newBulkString("key3"), newBulkString("value3")}))
 	require.NoError(t, err)
 	_, err = bufio.NewReader(masterConn).ReadString('\n')
