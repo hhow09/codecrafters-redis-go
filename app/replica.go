@@ -10,6 +10,7 @@ import (
 type replicaServer struct {
 	*server
 	*replicaConf
+	master *net.Conn
 }
 
 type replicaConf struct {
@@ -19,37 +20,46 @@ type replicaConf struct {
 }
 
 func newReplicaServer(host, port string, db *db, replicaConf *replicaConf) (*replicaServer, error) {
-	role := RoleSlave
-	s := newServer(host, port, db, role)
+	s := newServer(host, port, db, RoleSlave)
 	return &replicaServer{
 		server:      s,
 		replicaConf: replicaConf,
 	}, nil
 }
 
-func (s *replicaServer) Start() {
-	err := s.sendHandshake()
+func (s *replicaServer) Start(shutdown chan os.Signal) {
+	conn, err := s.sendHandshake()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	s.server.Start()
+	s.master = &conn
+
+	// handle master connection (for replication)
+	go func(conn net.Conn) {
+		if err := s.server.handler(conn); err != nil {
+			fmt.Println(err)
+		}
+	}(conn)
+
+	// handle client connection
+	s.server.Start(shutdown)
 }
 
 // handshake sends the handshake message to the master
-func (s *replicaServer) sendHandshake() error {
+func (s *replicaServer) sendHandshake() (net.Conn, error) {
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%s", s.masterHost, s.masterPort))
 	if err != nil {
-		return fmt.Errorf("Error connecting to master: %s", err.Error())
+		return nil, fmt.Errorf("Error connecting to master: %s", err.Error())
 	}
-	defer conn.Close()
+	r := bufio.NewReader(conn)
 	_, err = conn.Write(newArray([][]byte{newBulkString("PING")}))
 	if err != nil {
-		return fmt.Errorf("Error writing to connection: %s", err.Error())
+		return nil, fmt.Errorf("Error writing to connection: %s", err.Error())
 	}
-	_, err = bufio.NewReader(conn).ReadString('\n')
+	_, err = r.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("Error reading from connection: %s", err.Error())
+		return nil, fmt.Errorf("Error reading from connection: %s", err.Error())
 	}
 	// REPLCONF <option> <value> <option> <value> ...
 	// ref: https://redis.io/docs/latest/commands/replconf/
@@ -57,31 +67,42 @@ func (s *replicaServer) sendHandshake() error {
 	// Set the slave port, so that Master's INFO command can list the slave listening port correctly.
 	_, err = conn.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("listening-port"), newBulkString(s.port)}))
 	if err != nil {
-		return fmt.Errorf("Error writing to connection: %s", err.Error())
+		return nil, fmt.Errorf("Error writing to connection: %s", err.Error())
 	}
-	_, err = bufio.NewReader(conn).ReadString('\n')
+	_, err = r.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("Error reading from connection: %s", err.Error())
+		return nil, fmt.Errorf("Error reading from connection: %s", err.Error())
 	}
 	// Inform the master of our (slave) capabilities.
 	// EOF / PSYNC2
 	_, err = conn.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("capa"), newBulkString("psync2")}))
 	if err != nil {
-		return fmt.Errorf("Error writing to connection: %s", err.Error())
+		return nil, fmt.Errorf("Error writing to connection: %s", err.Error())
 	}
-	_, err = bufio.NewReader(conn).ReadString('\n')
+	_, err = r.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("Error reading from connection: %s", err.Error())
+		return nil, fmt.Errorf("Error reading from connection: %s", err.Error())
 	}
+
+	// Connected to master
 
 	// TODO: The replica sends PSYNC to the master (Next stages)
 	_, err = conn.Write(newArray([][]byte{newBulkString("PSYNC"), newBulkString("?"), newBulkString("-1")}))
 	if err != nil {
-		return fmt.Errorf("Error writing to connection: %s", err.Error())
+		return nil, fmt.Errorf("Error writing to connection: %s", err.Error())
 	}
-	_, err = bufio.NewReader(conn).ReadString('\n')
+	_, err = r.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("Error reading from connection: %s", err.Error())
+		return nil, fmt.Errorf("Error reading from connection: %s", err.Error())
 	}
-	return nil
+	// here we assum FULLRESYNC is received
+
+	// Read the RDB file from the master
+	// size limit: https://github.com/redis/redis-doc/pull/1653
+	_, err = r.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("Error reading from connection: %s", err.Error())
+	}
+	// RDB file received
+	return conn, nil
 }

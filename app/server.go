@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	// Uncomment this block to pass the first stage
@@ -15,11 +17,16 @@ import (
 	"os"
 
 	"github.com/codecrafters-io/redis-starter-go/app/persistence"
+	"github.com/codecrafters-io/redis-starter-go/app/replication"
 )
 
 const (
 	RoleMaster = "master"
 	RoleSlave  = "slave"
+)
+
+const (
+	backlogSizePerReplica = 1000
 )
 
 func main() {
@@ -29,10 +36,11 @@ func main() {
 	flag.Parse()
 
 	var rpc *replicaConf
+	shutdown := make(chan os.Signal, 1)
 	switch *replicaOf {
 	case "":
 		s := newServer("localhost", *p, newDB(), role)
-		s.Start()
+		s.Start(shutdown)
 	default:
 		sl := strings.Split(*replicaOf, " ")
 		masterHost, masterPort := sl[0], sl[1]
@@ -45,18 +53,28 @@ func main() {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		rs.Start()
+		rs.Start(shutdown)
 	}
 }
 
 type server struct {
-	host         string
-	port         string
-	db           *db
-	role         string
-	masterReplid string
-	masterOffset uint64
-	replicas     map[string]net.Conn
+	host               string
+	port               string
+	db                 *db
+	role               string
+	masterReplid       string
+	masterOffset       uint64
+	replicationBacklog *replication.ReplicatinoBacklog
+}
+
+type replicaStore struct {
+	mu    sync.Mutex
+	store map[string]*replica
+}
+
+type replica struct {
+	conn net.Conn
+	buf  [][]byte // replication buffer, https://redis.io/docs/latest/operate/oss_and_stack/management/replication/
 }
 
 func newServer(host, port string, db *db, role string) *server {
@@ -67,45 +85,52 @@ func newServer(host, port string, db *db, role string) *server {
 		masterReplid: generateRandomString(40),
 		masterOffset: 0,
 
-		role:     role,
-		replicas: make(map[string]net.Conn, 0),
+		role:               role,
+		replicationBacklog: replication.NewReplicationBacklog(backlogSizePerReplica),
 	}
 }
 
-func (s *server) Start() {
+func (s *server) Start(shutdown chan os.Signal) {
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
+
 	l, err := net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
 	if err != nil {
 		err := fmt.Errorf("Error listening: %v", err.Error())
 		fmt.Println(err)
-		os.Exit(1)
 	}
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
-			os.Exit(1)
-		}
-		go func(conn net.Conn) {
-			if err := s.handler(conn); err != nil {
-				fmt.Println(err)
+	if s.role == RoleMaster {
+		go s.replicationBacklog.SendBacklog(shutdown)
+	}
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				fmt.Println("Error accepting connection: ", err.Error())
 				os.Exit(1)
 			}
-		}(conn)
-	}
+			go func(conn net.Conn) {
+				if err := s.handler(conn); err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+			}(conn)
+		}
+	}()
+	sig := <-shutdown
+	fmt.Printf("[%s, %s] Shutting down server: %v\n", s.port, s.role, sig)
 }
 
 // expeting *1\r\n$4\r\nping\r\n
 func (s *server) handler(conn net.Conn) error {
+	r := bufio.NewReader(conn)
 	defer conn.Close()
 	for {
-		fullCmdBuf := bytes.NewBuffer(nil)
-		r := bufio.NewReader(io.TeeReader(conn, fullCmdBuf)) //
 		typmsg, err := r.ReadByte()
 		if err != nil {
 			if err == io.EOF {
 				return nil
 			}
-			return fmt.Errorf("Error reading from connection: %s", err.Error())
+			return fmt.Errorf("Error reading byte from connection: %s", err.Error())
 		}
 		typ := checkDataType(typmsg)
 		if typ != typeArray {
@@ -116,7 +141,7 @@ func (s *server) handler(conn net.Conn) error {
 		}
 		arr, err := handleRESPArray(r)
 		if err != nil {
-			return fmt.Errorf("Error reading from connection: %s", err.Error())
+			return fmt.Errorf("Error reading resp array from connection: %s", err.Error())
 		}
 		if len(arr) == 0 {
 			if _, err := conn.Write(newErrorMSG("empty array")); err != nil {
@@ -152,21 +177,24 @@ func (s *server) handler(conn net.Conn) error {
 				case "px":
 					exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
 					if err != nil {
-						_, err := conn.Write(newErrorMSG("invalid expire time"))
-						if err != nil {
+						_, werr := conn.Write(newErrorMSG("invalid expire time"))
+						if werr != nil {
 							return fmt.Errorf("Error writing to connection: %s", err.Error())
 						}
-						return nil
+						return fmt.Errorf("Error parsing expire time: %s", err.Error())
 					}
 					s.db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
 				}
 			default:
 				s.db.set(arr[1], arr[2])
 			}
-
-			_, err := conn.Write(newSimpleString("OK"))
-			if err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			// store commands in replication buffer
+			if s.role == RoleMaster {
+				s.replicationBacklog.InsertBacklog(newSetCmd(arr))
+				_, err := conn.Write(newSimpleString("OK"))
+				if err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
 			}
 		// [GET, key]
 		case "GET":
@@ -210,8 +238,8 @@ func (s *server) handler(conn net.Conn) error {
 			switch arr[1] {
 			case "listening-port":
 				// id: host-port
-				id := fmt.Sprintf("%s-%s", conn.RemoteAddr(), arr[2])
-				s.replicas[id] = conn
+				id := fmt.Sprintf("%s-%s", strings.Split(conn.RemoteAddr().String(), ":")[0], arr[2])
+				s.replicationBacklog.AddReplica(id, conn)
 			case "capa":
 				// TODO
 			}
@@ -252,24 +280,6 @@ func (s *server) handler(conn net.Conn) error {
 			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
 				return fmt.Errorf("Error writing to connection: %s", err.Error())
 			}
-		}
-		if s.role == RoleMaster {
-			switch arr[0] {
-			case "SET", "GET":
-				s.broadcast(fullCmdBuf.Bytes())
-				fullCmdBuf.Reset()
-			}
-		}
-
-	}
-}
-
-// Broadcast the command to all replicas
-func (s *server) broadcast(msg []byte) {
-	for _, rplc := range s.replicas {
-		_, err := rplc.Write(msg)
-		if err != nil {
-			fmt.Println("Error writing to replica: ", err.Error())
 		}
 	}
 }

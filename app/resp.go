@@ -104,3 +104,11 @@ func newRDBFile(f []byte) []byte {
 	prefix := []byte(fmt.Sprintf("%c%d\r\n", typeBulkString, len(f)))
 	return append(prefix, f...)
 }
+
+func newSetCmd(arr []string) []byte {
+	a := [][]byte{newBulkString("SET"), newBulkString(arr[1]), newBulkString(arr[2])}
+	if len(arr) > 3 {
+		a = append(a, newBulkString(arr[3]), newBulkString(arr[4]))
+	}
+	return newArray(a)
+}
