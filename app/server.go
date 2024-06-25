@@ -40,7 +40,7 @@ func main() {
 	switch *replicaOf {
 	case "":
 		s := newServer("localhost", *p, newDB(), role)
-		s.Start(shutdown)
+		s.Start(shutdown, s.handler)
 	default:
 		sl := strings.Split(*replicaOf, " ")
 		masterHost, masterPort := sl[0], sl[1]
@@ -90,13 +90,14 @@ func newServer(host, port string, db *db, role string) *server {
 	}
 }
 
-func (s *server) Start(shutdown chan os.Signal) {
+func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
 
 	l, err := net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
 	if err != nil {
 		err := fmt.Errorf("Error listening: %v", err.Error())
 		fmt.Println(err)
+		os.Exit(1)
 	}
 	if s.role == RoleMaster {
 		go s.replicationBacklog.SendBacklog(shutdown)
@@ -109,7 +110,7 @@ func (s *server) Start(shutdown chan os.Signal) {
 				os.Exit(1)
 			}
 			go func(conn net.Conn) {
-				if err := s.handler(conn); err != nil {
+				if err := h(conn); err != nil {
 					fmt.Println(err)
 					os.Exit(1)
 				}
@@ -152,41 +153,20 @@ func (s *server) handler(conn net.Conn) error {
 		// https://redis.io/docs/latest/commands/ping/
 		// [PING]
 		case "PING":
-			if _, err := conn.Write(newSimpleString("PONG")); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			if err := handlePing(conn); err != nil {
+				return err
 			}
 		// https://redis.io/docs/latest/commands/echo/
 		// [ECHO, message]
 		case "ECHO":
-			if len(arr) < 2 {
-				if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
-				}
-				return nil
-			}
-			if _, err := conn.Write(newBulkString(arr[1])); err != nil {
-				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			if err := handleEcho(conn, arr); err != nil {
+				return err
 			}
 		// https://redis.io/docs/latest/commands/set/
 		// [SET, key, value]
 		case "SET":
-			switch len(arr) {
-			case 5:
-				switch arr[3] {
-				// PX milliseconds -- Set the specified expire time, in milliseconds (a positive integer).
-				case "px":
-					exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
-					if err != nil {
-						_, werr := conn.Write(newErrorMSG("invalid expire time"))
-						if werr != nil {
-							return fmt.Errorf("Error writing to connection: %s", err.Error())
-						}
-						return fmt.Errorf("Error parsing expire time: %s", err.Error())
-					}
-					s.db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
-				}
-			default:
-				s.db.set(arr[1], arr[2])
+			if err := handleSet(conn, arr, s.db); err != nil {
+				return err
 			}
 			// store commands in replication buffer
 			if s.role == RoleMaster {
@@ -198,22 +178,8 @@ func (s *server) handler(conn net.Conn) error {
 			}
 		// [GET, key]
 		case "GET":
-			if len(arr) < 2 {
-				if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
-				}
-			}
-			value := s.db.get(arr[1])
-			if value == "" {
-				_, err := conn.Write(newNullBulkString())
-				if err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
-				}
-			} else {
-				_, err := conn.Write(newBulkString(value))
-				if err != nil {
-					return fmt.Errorf("Error writing to connection: %s", err.Error())
-				}
+			if err := handleGet(conn, arr, s.db); err != nil {
+				return err
 			}
 		case "INFO":
 			if len(arr) > 1 {
@@ -282,4 +248,67 @@ func (s *server) handler(conn net.Conn) error {
 			}
 		}
 	}
+}
+
+func handlePing(conn net.Conn) error {
+	if _, err := conn.Write(newSimpleString("PONG")); err != nil {
+		return fmt.Errorf("Error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+func handleEcho(conn net.Conn, arr []string) error {
+	if len(arr) < 2 {
+		if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
+			return fmt.Errorf("Error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	if _, err := conn.Write(newBulkString(arr[1])); err != nil {
+		return fmt.Errorf("Error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+func handleSet(conn net.Conn, arr []string, db *db) error {
+	switch len(arr) {
+	case 5:
+		switch arr[3] {
+		// PX milliseconds -- Set the specified expire time, in milliseconds (a positive integer).
+		case "px":
+			exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
+			if err != nil {
+				_, werr := conn.Write(newErrorMSG("invalid expire time"))
+				if werr != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
+				return fmt.Errorf("Error parsing expire time: %s", err.Error())
+			}
+			db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
+		}
+	default:
+		db.set(arr[1], arr[2])
+	}
+	return nil
+}
+
+func handleGet(conn net.Conn, arr []string, db *db) error {
+	if len(arr) < 2 {
+		if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
+			return fmt.Errorf("Error writing to connection: %s", err.Error())
+		}
+	}
+	value := db.get(arr[1])
+	if value == "" {
+		_, err := conn.Write(newNullBulkString())
+		if err != nil {
+			return fmt.Errorf("Error writing to connection: %s", err.Error())
+		}
+	} else {
+		_, err := conn.Write(newBulkString(value))
+		if err != nil {
+			return fmt.Errorf("Error writing to connection: %s", err.Error())
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
 )
@@ -37,13 +38,13 @@ func (s *replicaServer) Start(shutdown chan os.Signal) {
 
 	// handle master connection (for replication)
 	go func(conn net.Conn) {
-		if err := s.server.handler(conn); err != nil {
+		if err := s.replHandler(conn); err != nil {
 			fmt.Println(err)
 		}
 	}(conn)
 
 	// handle client connection
-	s.server.Start(shutdown)
+	s.server.Start(shutdown, s.server.handler)
 }
 
 // handshake sends the handshake message to the master
@@ -105,4 +106,83 @@ func (s *replicaServer) sendHandshake() (net.Conn, error) {
 	}
 	// RDB file received
 	return conn, nil
+}
+
+func (s *replicaServer) replHandler(conn net.Conn) error {
+	r := bufio.NewReader(conn)
+	defer conn.Close()
+	for {
+		typmsg, err := r.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("Error reading byte from connection: %s", err.Error())
+		}
+		typ := checkDataType(typmsg)
+		if typ != typeArray {
+			if _, err := conn.Write(newErrorMSG("expecting type array")); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		arr, err := handleRESPArray(r)
+		if err != nil {
+			return fmt.Errorf("Error reading resp array from connection: %s", err.Error())
+		}
+		if len(arr) == 0 {
+			if _, err := conn.Write(newErrorMSG("empty array")); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
+		}
+		switch arr[0] {
+		// https://redis.io/docs/latest/commands/ping/
+		// [PING]
+		case "PING":
+			if err := handlePing(conn); err != nil {
+				return err
+			}
+		// https://redis.io/docs/latest/commands/echo/
+		// [ECHO, message]
+		case "ECHO":
+			if err := handleEcho(conn, arr); err != nil {
+				return err
+			}
+		// https://redis.io/docs/latest/commands/set/
+		// [SET, key, value]
+		case "SET":
+			if err := handleSet(conn, arr, s.db); err != nil {
+				return err
+			}
+		// [GET, key]
+		case "GET":
+			if err := handleGet(conn, arr, s.db); err != nil {
+				return err
+			}
+		// TODO
+		// REPLCONF <option> <value> <option> <value> ...
+		// This command is used by a replica in order to configure the replication process before starting it with the SYNC command.
+		// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
+		case "REPLCONF":
+			if len(arr) != 3 {
+				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
+					return fmt.Errorf("Error writing to connection: %s", err.Error())
+				}
+				return nil
+			}
+			switch arr[1] {
+			case "GETACK":
+				if s.role == RoleSlave {
+					if _, err := conn.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("ACK"), newBulkString("0")})); err != nil {
+						return fmt.Errorf("Error writing to connection: %s", err.Error())
+					}
+				}
+			}
+
+		default:
+			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
+				return fmt.Errorf("Error writing to connection: %s", err.Error())
+			}
+		}
+	}
 }

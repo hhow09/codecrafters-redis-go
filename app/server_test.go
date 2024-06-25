@@ -55,7 +55,7 @@ func TestSetGet(t *testing.T) {
 	s := newServer("localhost", port, newDB(), RoleMaster)
 	c := make(chan os.Signal, 1)
 	defer close(c)
-	go s.Start(c)
+	go s.Start(c, s.handler)
 
 	conn, err := dialWithRetry(3, "localhost", port)
 	require.NoError(t, err)

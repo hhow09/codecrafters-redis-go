@@ -15,7 +15,7 @@ func TestHandshake(t *testing.T) {
 	master := newServer("localhost", masterPort, newDB(), RoleMaster)
 	c := make(chan os.Signal, 1)
 	defer close(c)
-	go master.Start(c)
+	go master.Start(c, master.handler)
 
 	rs, err := newReplicaServer("localhost", "8085", newDB(), &replicaConf{masterHost: "localhost", masterPort: masterPort})
 	require.NoError(t, err)
@@ -36,7 +36,7 @@ func TestPropogate(t *testing.T) {
 	master := newServer("localhost", masterPort, newDB(), RoleMaster)
 	c := make(chan os.Signal, 1)
 	defer close(c)
-	go master.Start(c)
+	go master.Start(c, master.handler)
 
 	rs, err := newReplicaServer("localhost", replicaPort, newDB(), &replicaConf{masterHost: "localhost", masterPort: masterPort})
 	require.NoError(t, err)
