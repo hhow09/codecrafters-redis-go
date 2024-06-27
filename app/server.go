@@ -5,15 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	// Uncomment this block to pass the first stage
-	"net"
-	"os"
 
 	"github.com/codecrafters-io/redis-starter-go/app/persistence"
 	"github.com/codecrafters-io/redis-starter-go/app/replication"
@@ -110,7 +108,6 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 	fmt.Printf("[%s, %s] Shutting down server: %v\n", s.port, s.role, sig)
 }
 
-// expeting *1\r\n$4\r\nping\r\n
 func (s *server) handler(conn net.Conn) error {
 	r := bufio.NewReader(conn)
 	defer conn.Close()
@@ -235,6 +232,25 @@ func (s *server) handler(conn net.Conn) error {
 				return fmt.Errorf("error marshalling RDB file: %s", err.Error())
 			}
 			if _, err := conn.Write(newRDBFile(b)); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+		// [WAIT numreplicas timeout]
+		// https://redis.io/docs/latest/commands/wait/
+		case "WAIT":
+			if len(arr) != 3 {
+				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+				return nil
+			}
+			_, err := strconv.Atoi(arr[1])
+			if err != nil {
+				if _, err := conn.Write(newErrorMSG("invalid numreplicas")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+				return nil
+			}
+			if _, err := conn.Write(newInt(0)); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 

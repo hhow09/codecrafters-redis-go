@@ -13,6 +13,7 @@ const (
 	typeBulkString   = '$'
 	typeArray        = '*'
 	typeError        = '-'
+	typeInt          = ':'
 )
 
 func handleRESPArray(r reader) ([]string, error) {
@@ -110,4 +111,8 @@ func newSetCmd(arr []string) []byte {
 		a = append(a, newBulkString(arr[3]), newBulkString(arr[4]))
 	}
 	return newArray(a)
+}
+
+func newInt(i int) []byte {
+	return []byte(fmt.Sprintf("%c%d\r\n", typeInt, i))
 }
