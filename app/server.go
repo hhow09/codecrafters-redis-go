@@ -69,7 +69,7 @@ func newServer(host, port string, db *db, role string) *server {
 		host:         host,
 		port:         port,
 		db:           db,
-		masterReplid: generateRandomString(40),
+		masterReplid: replication.GenReplicationID(),
 		masterOffset: 0,
 
 		role:               role,
@@ -250,7 +250,8 @@ func (s *server) handler(conn net.Conn) error {
 				}
 				return nil
 			}
-			if _, err := conn.Write(newInt(0)); err != nil {
+			count := s.replicationBacklog.ReplicaCount()
+			if _, err := conn.Write(newInt(count)); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 

@@ -46,6 +46,12 @@ func (r *ReplicatinoBacklog) RemoveReplica(id string) {
 	delete(r.replicastore, id)
 }
 
+func (r *ReplicatinoBacklog) ReplicaCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.replicastore)
+}
+
 func (r *ReplicatinoBacklog) InsertBacklog(val []byte) {
 	for _, rplc := range r.replicastore {
 		rplc.buf = append(rplc.buf, val)
