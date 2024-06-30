@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,20 +64,20 @@ func TestSetGet(t *testing.T) {
 
 	require.NoError(t, conn.SetDeadline(time.Now().Add(2*time.Second)))
 
-	_, err = conn.Write(newArray([][]byte{newBulkString("SET"), newBulkString("key1"), newBulkString("value1")}))
+	_, err = conn.Write(resp.NewArray([][]byte{resp.NewBulkString("SET"), resp.NewBulkString("key1"), resp.NewBulkString("value1")}))
 	require.NoError(t, err)
 
 	r := bufio.NewReader(conn)
 	res1, err := r.ReadBytes('\n')
 	require.NoError(t, err)
-	require.Equal(t, newSimpleString("OK"), res1)
+	require.Equal(t, resp.NewSimpleString("OK"), res1)
 
-	_, err = conn.Write(newArray([][]byte{newBulkString("GET"), newBulkString("key1")}))
+	_, err = conn.Write(resp.NewArray([][]byte{resp.NewBulkString("GET"), resp.NewBulkString("key1")}))
 	require.NoError(t, err)
 
 	res2_1, err := r.ReadBytes('\n')
 	require.NoError(t, err)
 	res2_2, err := r.ReadBytes('\n')
 	require.NoError(t, err)
-	require.Equal(t, newBulkString("value1"), append(res2_1, res2_2...))
+	require.Equal(t, resp.NewBulkString("value1"), append(res2_1, res2_2...))
 }

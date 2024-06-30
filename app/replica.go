@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	appbufio "github.com/codecrafters-io/redis-starter-go/app/bufio"
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 type replicaServer struct {
@@ -62,7 +63,7 @@ func (s *replicaServer) sendHandshake() (*bufio.Reader, io.WriteCloser, error) {
 	}
 	r := bufio.NewReader(conn)
 	wc := io.WriteCloser(conn)
-	_, err = wc.Write(newArray([][]byte{newBulkString("PING")}))
+	_, err = wc.Write(resp.NewArray([][]byte{resp.NewBulkString("PING")}))
 	if err != nil {
 		return nil, nil, fmt.Errorf("error writing to connection: %s", err.Error())
 	}
@@ -74,7 +75,7 @@ func (s *replicaServer) sendHandshake() (*bufio.Reader, io.WriteCloser, error) {
 	// ref: https://redis.io/docs/latest/commands/replconf/
 	// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L2685
 	// Set the slave port, so that Master's INFO command can list the slave listening port correctly.
-	_, err = wc.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("listening-port"), newBulkString(s.port)}))
+	_, err = wc.Write(resp.NewArray([][]byte{resp.NewBulkString("REPLCONF"), resp.NewBulkString("listening-port"), resp.NewBulkString(s.port)}))
 	if err != nil {
 		return nil, nil, fmt.Errorf("error writing to connection: %s", err.Error())
 	}
@@ -84,7 +85,7 @@ func (s *replicaServer) sendHandshake() (*bufio.Reader, io.WriteCloser, error) {
 	}
 	// Inform the master of our (slave) capabilities.
 	// EOF / PSYNC2
-	_, err = wc.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("capa"), newBulkString("psync2")}))
+	_, err = wc.Write(resp.NewArray([][]byte{resp.NewBulkString("REPLCONF"), resp.NewBulkString("capa"), resp.NewBulkString("psync2")}))
 	if err != nil {
 		return nil, nil, fmt.Errorf("error writing to connection: %s", err.Error())
 	}
@@ -94,9 +95,7 @@ func (s *replicaServer) sendHandshake() (*bufio.Reader, io.WriteCloser, error) {
 	}
 
 	// Connected to master
-
-	// TODO: The replica sends PSYNC to the master (Next stages)
-	_, err = wc.Write(newArray([][]byte{newBulkString("PSYNC"), newBulkString("?"), newBulkString("-1")}))
+	_, err = wc.Write(resp.NewArray([][]byte{resp.NewBulkString("PSYNC"), resp.NewBulkString("?"), resp.NewBulkString("-1")}))
 	if err != nil {
 		return nil, nil, fmt.Errorf("error writing to connection: %s", err.Error())
 	}
@@ -127,26 +126,25 @@ func (s *replicaServer) replHandler(ir *bufio.Reader, wc io.WriteCloser) error {
 	r := appbufio.NewTrackedBufioReader(ir)
 	defer wc.Close()
 	for {
-		typmsg, err := r.ReadByte()
+		typ, err := resp.CheckDataType(r)
 		if err != nil {
 			if err == io.EOF {
 				return nil
 			}
-			return fmt.Errorf("error reading byte from connection: %s", err.Error())
+			return fmt.Errorf("error reading from connection: %s", err.Error())
 		}
-		typ := checkDataType(typmsg)
-		if typ != typeArray {
-			if _, err := wc.Write(newErrorMSG("expecting type array")); err != nil {
+		if typ != resp.TypeArray {
+			if _, err := wc.Write(resp.NewErrorMSG("expecting type array")); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 			return nil
 		}
-		arr, err := handleRESPArray(r)
+		arr, err := resp.HandleRESPArray(r)
 		if err != nil {
 			return fmt.Errorf("error reading resp array from connection: %s", err.Error())
 		}
 		if len(arr) == 0 {
-			if _, err := wc.Write(newErrorMSG("empty array")); err != nil {
+			if _, err := wc.Write(resp.NewErrorMSG("empty array")); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}
@@ -171,7 +169,7 @@ func (s *replicaServer) replHandler(ir *bufio.Reader, wc io.WriteCloser) error {
 		// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
 		case "REPLCONF":
 			if len(arr) != 3 {
-				if _, err := wc.Write(newErrorMSG("expecting 3 arguments")); err != nil {
+				if _, err := wc.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
 					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 				return nil
@@ -180,13 +178,13 @@ func (s *replicaServer) replHandler(ir *bufio.Reader, wc io.WriteCloser) error {
 			case "GETACK":
 				// The offset should only include the number of bytes of commands processed before receiving the current REPLCONF GETACK command.
 				offset := fmt.Sprintf("%v", s.replicaConf.masterOffset)
-				if _, err := wc.Write(newArray([][]byte{newBulkString("REPLCONF"), newBulkString("ACK"), newBulkString(offset)})); err != nil {
+				if _, err := wc.Write(resp.NewArray([][]byte{resp.NewBulkString("REPLCONF"), resp.NewBulkString("ACK"), resp.NewBulkString(offset)})); err != nil {
 					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 			}
 
 		default:
-			if _, err := wc.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
+			if _, err := wc.Write([]byte(resp.NewErrorMSG("unknown command " + arr[0]))); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}

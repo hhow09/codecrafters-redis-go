@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codecrafters-io/redis-starter-go/app/persistence"
 	"github.com/codecrafters-io/redis-starter-go/app/replication"
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 const (
@@ -86,9 +86,7 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	if s.role == RoleMaster {
-		go s.replicationBacklog.SendBacklog(shutdown)
-	}
+
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -108,30 +106,29 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 	fmt.Printf("[%s, %s] Shutting down server: %v\n", s.port, s.role, sig)
 }
 
-func (s *server) handler(conn net.Conn) error {
+func (s *server) handler(conn net.Conn) (err error) {
 	r := bufio.NewReader(conn)
 	defer conn.Close()
 	for {
-		typmsg, err := r.ReadByte()
+		typ, err := resp.CheckDataType(r)
 		if err != nil {
 			if err == io.EOF {
 				return nil
 			}
 			return fmt.Errorf("error reading byte from connection: %s", err.Error())
 		}
-		typ := checkDataType(typmsg)
-		if typ != typeArray {
-			if _, err := conn.Write(newErrorMSG("expecting type array")); err != nil {
+		if typ != resp.TypeArray {
+			if _, err := conn.Write(resp.NewErrorMSG("expecting type array")); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 			return nil
 		}
-		arr, err := handleRESPArray(r)
+		arr, err := resp.HandleRESPArray(r)
 		if err != nil {
 			return fmt.Errorf("error reading resp array from connection: %s", err.Error())
 		}
 		if len(arr) == 0 {
-			if _, err := conn.Write(newErrorMSG("empty array")); err != nil {
+			if _, err := conn.Write(resp.NewErrorMSG("empty array")); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}
@@ -156,8 +153,12 @@ func (s *server) handler(conn net.Conn) error {
 			}
 			if s.role == RoleMaster {
 				// store commands in replication buffer
-				s.replicationBacklog.InsertBacklog(newSetCmd(arr))
-				_, err := conn.Write(newSimpleString("OK"))
+				msg := replication.Msg{
+					Data:               resp.NewSetCmd(arr),
+					ShouldWaitResponse: false,
+				}
+				s.replicationBacklog.BroardcastBacklog(msg)
+				_, err := conn.Write(resp.NewSimpleString("OK"))
 				if err != nil {
 					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
@@ -170,7 +171,7 @@ func (s *server) handler(conn net.Conn) error {
 		case "INFO":
 			if len(arr) > 1 {
 				if arr[1] == "replication" {
-					if _, err := conn.Write(newBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset))); err != nil {
+					if _, err := conn.Write(resp.NewBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset))); err != nil {
 						return fmt.Errorf("error writing to connection: %s", err.Error())
 					}
 
@@ -182,81 +183,39 @@ func (s *server) handler(conn net.Conn) error {
 		// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
 		case "REPLCONF":
 			if len(arr) != 3 {
-				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
+				if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
 					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 				return nil
 			}
 			switch arr[1] {
 			case "listening-port":
-				// id: host-port
-				id := fmt.Sprintf("%s-%s", strings.Split(conn.RemoteAddr().String(), ":")[0], arr[2])
-				s.replicationBacklog.AddReplica(id, conn)
-			case "capa":
-				// TODO
+				// should hand over the connection ownership to replica connection and not use the reader here anymore.
+				return s.handleReiplicaHanshake(conn, r, arr[2])
+
 			case "GETACK":
-				// store commands in replication buffer
-				s.replicationBacklog.InsertBacklog(newArray([][]byte{newBulkString(arr[0]), newBulkString(arr[1]), newBulkString(arr[2])}))
-				_, err := conn.Write(newSimpleString("OK"))
-				if err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
+				msg := replication.Msg{
+					Data:               resp.NewArray([][]byte{resp.NewBulkString(arr[0]), resp.NewBulkString(arr[1]), resp.NewBulkString(arr[2])}),
+					ShouldWaitResponse: false,
 				}
+				s.replicationBacklog.BroardcastBacklog(msg)
 			}
-			if _, err := conn.Write(newSimpleString("OK")); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-		case "PSYNC":
-			if len(arr) != 3 {
-				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-				return nil
-			}
-			// Send a FULLRESYNC reply in the specific case of a full resynchronization.
-			// https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L674
-			_, err := conn.Write((newSimpleString(fmt.Sprintf("FULLRESYNC %s %d", s.masterReplid, s.masterOffset))))
-			if err != nil {
+			if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 
-			rdbFile := persistence.RDB{
-				Aux: &persistence.Aux{
-					Version: "7.2.0",
-					Bits:    64,
-					Ctime:   1829289061,
-					UsedMem: 2965639168,
-				},
-			}
-			b, err := rdbFile.MarshalRDB()
-			if err != nil {
-				return fmt.Errorf("error marshalling RDB file: %s", err.Error())
-			}
-			if _, err := conn.Write(newRDBFile(b)); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
 		// [WAIT numreplicas timeout]
-		// https://redis.io/docs/latest/commands/wait/
+		// ref: https://redis.io/docs/latest/commands/wait/
+		// The WAIT command should return when either (a) the specified number of replicas have acknowledged the command, or (b) the timeout expires.
+		// The WAIT command should always return the number of replicas that have acknowledged the command, even if the timeout expires.
+		// The returned number of replicas might be lesser than or greater than the expected number of replicas specified in the WAIT command.
+		// ref: https://app.codecrafters.io/courses/redis/stages/na2
 		case "WAIT":
-			if len(arr) != 3 {
-				if _, err := conn.Write(newErrorMSG("expecting 3 arguments")); err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-				return nil
+			if err := handleWait(conn, arr, s.replicationBacklog); err != nil {
+				return err
 			}
-			_, err := strconv.Atoi(arr[1])
-			if err != nil {
-				if _, err := conn.Write(newErrorMSG("invalid numreplicas")); err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-				return nil
-			}
-			count := s.replicationBacklog.ReplicaCount()
-			if _, err := conn.Write(newInt(count)); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-
 		default:
-			if _, err := conn.Write([]byte(newErrorMSG("unknown command " + arr[0]))); err != nil {
+			if _, err := conn.Write([]byte(resp.NewErrorMSG("unknown command " + arr[0]))); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}
@@ -264,7 +223,7 @@ func (s *server) handler(conn net.Conn) error {
 }
 
 func handlePing(conn net.Conn) error {
-	if _, err := conn.Write(newSimpleString("PONG")); err != nil {
+	if _, err := conn.Write(resp.NewSimpleString("PONG")); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil
@@ -272,12 +231,12 @@ func handlePing(conn net.Conn) error {
 
 func handleEcho(conn net.Conn, arr []string) error {
 	if len(arr) < 2 {
-		if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting 2 arguments")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 		return nil
 	}
-	if _, err := conn.Write(newBulkString(arr[1])); err != nil {
+	if _, err := conn.Write(resp.NewBulkString(arr[1])); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil
@@ -291,7 +250,7 @@ func handleSet(conn io.Writer, arr []string, db *db) error {
 		case "px":
 			exp, err := strconv.ParseInt(arr[4], 10, 64) // milliseconds
 			if err != nil {
-				if _, werr := conn.Write(newErrorMSG("invalid expire time")); werr != nil {
+				if _, werr := conn.Write(resp.NewErrorMSG("invalid expire time")); werr != nil {
 					return fmt.Errorf("error writing to connection: %s", err.Error())
 				}
 				return fmt.Errorf("error parsing expire time: %s", err.Error())
@@ -306,19 +265,49 @@ func handleSet(conn io.Writer, arr []string, db *db) error {
 
 func handleGet(conn net.Conn, arr []string, db *db) error {
 	if len(arr) < 2 {
-		if _, err := conn.Write(newErrorMSG("expecting 2 arguments")); err != nil {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting 2 arguments")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 	}
 	value := db.get(arr[1])
 	if value == "" {
-		if _, err := conn.Write(newNullBulkString()); err != nil {
+		if _, err := conn.Write(resp.NewNullBulkString()); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 	} else {
-		if _, err := conn.Write(newBulkString(value)); err != nil {
+		if _, err := conn.Write(resp.NewBulkString(value)); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
+	}
+	return nil
+}
+
+func handleWait(conn net.Conn, arr []string, backlog *replication.ReplicatinoBacklog) error {
+	if len(arr) != 3 {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	replCount, err := strconv.Atoi(arr[1])
+	if err != nil || replCount < 0 {
+		if _, err := conn.Write(resp.NewErrorMSG("invalid numreplicas")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	timeout, err := strconv.Atoi(arr[2])
+	if err != nil {
+		if _, err := conn.Write(resp.NewErrorMSG("invalid timeout")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	if replCount == 0 {
+		if _, err := conn.Write(resp.NewInt(0)); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	count := backlog.InSyncReplicas(time.Millisecond*time.Duration(timeout), replCount)
+	if _, err := conn.Write(resp.NewInt(count)); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil
 }
