@@ -30,13 +30,25 @@ func main() {
 	role := RoleMaster
 	p := flag.String("port", "6379", "port to bind to")
 	replicaOf := flag.String("replicaof", "", "replicaof host port")
+	dir := flag.String("dir", "", "directory to store db file")
+	dbfilename := flag.String("dbfilename", "dump.rdb", "rdb file name")
 	flag.Parse()
+	cfg := config{}
+	if *dir == "" && *dbfilename != "" {
+		panic("dbfilename should be provided with dir")
+	}
+	cfg = config{
+		persistence: persistenceCfg{
+			dir:        *dir,
+			dbfilename: *dbfilename,
+		},
+	}
 
 	var rpc *replicaConf
 	shutdown := make(chan os.Signal, 1)
 	switch *replicaOf {
 	case "":
-		s := newServer("localhost", *p, newDB(), role)
+		s := newServer("localhost", *p, newDB(), role, cfg)
 		s.Start(shutdown, s.handler)
 	default:
 		sl := strings.Split(*replicaOf, " ")
@@ -45,7 +57,7 @@ func main() {
 			masterHost: masterHost,
 			masterPort: masterPort,
 		}
-		rs, err := newReplicaServer("localhost", *p, newDB(), rpc)
+		rs, err := newReplicaServer("localhost", *p, newDB(), rpc, cfg)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -62,9 +74,19 @@ type server struct {
 	masterReplid       string
 	masterOffset       uint64
 	replicationBacklog *replication.ReplicatinoBacklog
+	config             config
 }
 
-func newServer(host, port string, db *db, role string) *server {
+type config struct {
+	persistence persistenceCfg
+}
+
+type persistenceCfg struct {
+	dir        string
+	dbfilename string
+}
+
+func newServer(host, port string, db *db, role string, config config) *server {
 	return &server{
 		host:         host,
 		port:         port,
@@ -74,6 +96,7 @@ func newServer(host, port string, db *db, role string) *server {
 
 		role:               role,
 		replicationBacklog: replication.NewReplicationBacklog(backlogSizePerReplica),
+		config:             config,
 	}
 }
 
@@ -214,6 +237,32 @@ func (s *server) handler(conn net.Conn) (err error) {
 			if err := handleWait(conn, arr, s.replicationBacklog); err != nil {
 				return err
 			}
+
+		// CONFIG GET parameter [parameter ...]
+		// ref: https://redis.io/docs/latest/commands/config-get/
+		case "CONFIG":
+			if len(arr) < 3 {
+				if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+				return nil
+			}
+			switch arr[1] {
+			case "GET":
+				res := [][]byte{}
+				for i := 2; i < len(arr); i++ {
+					switch arr[i] {
+					case "dir":
+						res = append(res, resp.NewBulkString("dir"), resp.NewBulkString(s.config.persistence.dir)) // key, value
+					case "dbfilename":
+						res = append(res, resp.NewBulkString("dbfilename"), resp.NewBulkString(s.config.persistence.dbfilename)) // key, value
+					}
+				}
+				if _, err := conn.Write(resp.NewArray(res)); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+			}
+
 		default:
 			if _, err := conn.Write([]byte(resp.NewErrorMSG("unknown command " + arr[0]))); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())

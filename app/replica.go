@@ -24,8 +24,8 @@ type replicaConf struct {
 	masterPort   string
 }
 
-func newReplicaServer(host, port string, db *db, replicaConf *replicaConf) (*replicaServer, error) {
-	s := newServer(host, port, db, RoleSlave)
+func newReplicaServer(host, port string, db *db, replicaConf *replicaConf, cfg config) (*replicaServer, error) {
+	s := newServer(host, port, db, RoleSlave, cfg)
 	return &replicaServer{
 		server:      s,
 		replicaConf: replicaConf,
