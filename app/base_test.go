@@ -3,6 +3,8 @@ package main
 import (
 	"net"
 	"time"
+
+	"github.com/codecrafters-io/redis-starter-go/app/database"
 )
 
 var (
@@ -20,4 +22,8 @@ func dialWithRetry(maxRetry int, host, port string) (net.Conn, error) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return nil, err
+}
+
+var mockdbs = []*database.DB{
+	database.NewDB(),
 }

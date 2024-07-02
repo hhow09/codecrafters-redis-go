@@ -16,7 +16,7 @@ func TestPing(t *testing.T) {
 
 	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
-	s := newServer("localhost", "8081", newDB(), RoleMaster, testCfg)
+	s := newServer("localhost", "8081", mockdbs, RoleMaster, testCfg)
 	go func() {
 		err := s.handler(server)
 		require.NoError(t, err)
@@ -35,7 +35,7 @@ func TestEcho(t *testing.T) {
 
 	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
-	s := newServer("localhost", "8082", newDB(), RoleMaster, testCfg)
+	s := newServer("localhost", "8082", mockdbs, RoleMaster, testCfg)
 	go func() {
 		err := s.handler(server)
 		require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestEcho(t *testing.T) {
 
 func TestSetGet(t *testing.T) {
 	port := "8083"
-	s := newServer("localhost", port, newDB(), RoleMaster, testCfg)
+	s := newServer("localhost", port, mockdbs, RoleMaster, testCfg)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go s.Start(c, s.handler)

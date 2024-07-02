@@ -8,11 +8,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/codecrafters-io/redis-starter-go/app/database"
+	"github.com/codecrafters-io/redis-starter-go/app/persistence"
 	"github.com/codecrafters-io/redis-starter-go/app/replication"
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
@@ -31,24 +34,26 @@ func main() {
 	p := flag.String("port", "6379", "port to bind to")
 	replicaOf := flag.String("replicaof", "", "replicaof host port")
 	dir := flag.String("dir", "", "directory to store db file")
-	dbfilename := flag.String("dbfilename", "dump.rdb", "rdb file name")
+	dbfilename := flag.String("dbfilename", "", "rdb file name")
 	flag.Parse()
-	cfg := config{}
 	if *dir == "" && *dbfilename != "" {
 		panic("dbfilename should be provided with dir")
 	}
-	cfg = config{
-		persistence: persistenceCfg{
-			dir:        *dir,
-			dbfilename: *dbfilename,
+	cfg := config{
+		persistence: persistence.Config{
+			Dir:        *dir,
+			Dbfilename: *dbfilename,
 		},
 	}
-
+	dbs, err := persistence.LoadRDB(cfg.persistence)
+	if err != nil {
+		panic(fmt.Errorf("fail to load RDB from confog: %w", err))
+	}
 	var rpc *replicaConf
 	shutdown := make(chan os.Signal, 1)
 	switch *replicaOf {
 	case "":
-		s := newServer("localhost", *p, newDB(), role, cfg)
+		s := newServer("localhost", *p, dbs, role, cfg)
 		s.Start(shutdown, s.handler)
 	default:
 		sl := strings.Split(*replicaOf, " ")
@@ -57,7 +62,7 @@ func main() {
 			masterHost: masterHost,
 			masterPort: masterPort,
 		}
-		rs, err := newReplicaServer("localhost", *p, newDB(), rpc, cfg)
+		rs, err := newReplicaServer("localhost", *p, dbs, rpc, cfg)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -69,7 +74,8 @@ func main() {
 type server struct {
 	host               string
 	port               string
-	db                 *db
+	dbs                []*database.DB
+	db                 *database.DB
 	role               string
 	masterReplid       string
 	masterOffset       uint64
@@ -78,19 +84,17 @@ type server struct {
 }
 
 type config struct {
-	persistence persistenceCfg
+	persistence persistence.Config
 }
 
-type persistenceCfg struct {
-	dir        string
-	dbfilename string
-}
+const defaultDBIdx = 0
 
-func newServer(host, port string, db *db, role string, config config) *server {
+func newServer(host, port string, dbs []*database.DB, role string, config config) *server {
 	return &server{
 		host:         host,
 		port:         port,
-		db:           db,
+		dbs:          dbs,
+		db:           dbs[defaultDBIdx], // current db
 		masterReplid: replication.GenReplicationID(),
 		masterOffset: 0,
 
@@ -191,6 +195,12 @@ func (s *server) handler(conn net.Conn) (err error) {
 			if err := handleGet(conn, arr, s.db); err != nil {
 				return err
 			}
+
+			// https://redis.io/docs/latest/commands/keys/
+		case "KEYS":
+			if err := handleKeys(conn, arr, s.db); err != nil {
+				return err
+			}
 		case "INFO":
 			if len(arr) > 1 {
 				if arr[1] == "replication" {
@@ -253,9 +263,9 @@ func (s *server) handler(conn net.Conn) (err error) {
 				for i := 2; i < len(arr); i++ {
 					switch arr[i] {
 					case "dir":
-						res = append(res, resp.NewBulkString("dir"), resp.NewBulkString(s.config.persistence.dir)) // key, value
+						res = append(res, resp.NewBulkString("dir"), resp.NewBulkString(s.config.persistence.Dir)) // key, value
 					case "dbfilename":
-						res = append(res, resp.NewBulkString("dbfilename"), resp.NewBulkString(s.config.persistence.dbfilename)) // key, value
+						res = append(res, resp.NewBulkString("dbfilename"), resp.NewBulkString(s.config.persistence.Dbfilename)) // key, value
 					}
 				}
 				if _, err := conn.Write(resp.NewArray(res)); err != nil {
@@ -291,7 +301,7 @@ func handleEcho(conn net.Conn, arr []string) error {
 	return nil
 }
 
-func handleSet(conn io.Writer, arr []string, db *db) error {
+func handleSet(conn io.Writer, arr []string, db *database.DB) error {
 	switch len(arr) {
 	case 5:
 		switch arr[3] {
@@ -304,21 +314,21 @@ func handleSet(conn io.Writer, arr []string, db *db) error {
 				}
 				return fmt.Errorf("error parsing expire time: %s", err.Error())
 			}
-			db.setExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
+			db.SetExp(arr[1], arr[2], time.Now().UnixMilli()+exp)
 		}
 	default:
-		db.set(arr[1], arr[2])
+		db.Set(arr[1], arr[2])
 	}
 	return nil
 }
 
-func handleGet(conn net.Conn, arr []string, db *db) error {
+func handleGet(conn net.Conn, arr []string, db *database.DB) error {
 	if len(arr) < 2 {
 		if _, err := conn.Write(resp.NewErrorMSG("expecting 2 arguments")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
 	}
-	value := db.get(arr[1])
+	value := db.Get(arr[1])
 	if value == "" {
 		if _, err := conn.Write(resp.NewNullBulkString()); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
@@ -356,6 +366,29 @@ func handleWait(conn net.Conn, arr []string, backlog *replication.ReplicatinoBac
 	}
 	count := backlog.InSyncReplicas(time.Millisecond*time.Duration(timeout), replCount)
 	if _, err := conn.Write(resp.NewInt(count)); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+func handleKeys(conn net.Conn, arr []string, db *database.DB) error {
+	if len(arr) != 2 {
+		return fmt.Errorf("invliad keys length")
+	}
+	pattern := arr[1]
+	if pattern == "*" {
+		pattern = ".*"
+	}
+	regex, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("invliad patter:  %w", err)
+	}
+	keys := db.Keys(regex)
+	res := make([][]byte, len(keys))
+	for i, k := range keys {
+		res[i] = resp.NewBulkString(k)
+	}
+	if _, err := conn.Write(resp.NewArray(res)); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil

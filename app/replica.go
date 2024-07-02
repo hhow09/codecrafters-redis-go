@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	appbufio "github.com/codecrafters-io/redis-starter-go/app/bufio"
+	"github.com/codecrafters-io/redis-starter-go/app/database"
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
@@ -24,8 +25,8 @@ type replicaConf struct {
 	masterPort   string
 }
 
-func newReplicaServer(host, port string, db *db, replicaConf *replicaConf, cfg config) (*replicaServer, error) {
-	s := newServer(host, port, db, RoleSlave, cfg)
+func newReplicaServer(host, port string, dbs []*database.DB, replicaConf *replicaConf, cfg config) (*replicaServer, error) {
+	s := newServer(host, port, dbs, RoleSlave, cfg)
 	return &replicaServer{
 		server:      s,
 		replicaConf: replicaConf,
