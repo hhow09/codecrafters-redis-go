@@ -17,7 +17,6 @@ type DB struct {
 
 type Data struct {
 	Value             string
-	Expired           bool
 	ExpireTimestampMS uint64
 }
 
@@ -54,7 +53,6 @@ func (d *DB) Set(key, value string) {
 	defer d.mu.Unlock()
 	d.datas[key] = Data{
 		Value:             value,
-		Expired:           false,
 		ExpireTimestampMS: NO_EXPIRY,
 	}
 }
@@ -64,7 +62,6 @@ func (d *DB) SetExp(key, value string, exp int64) {
 	defer d.mu.Unlock()
 	d.datas[key] = Data{
 		Value:             value,
-		Expired:           false,
 		ExpireTimestampMS: uint64(exp),
 	}
 }

@@ -53,14 +53,54 @@ func TestUnMarshalRDB(t *testing.T) {
 	rdb, err := UnMarshalRDB(b)
 	require.NoError(t, err)
 	db := rdb.DBs[0]
-	require.Empty(t, db.ExpiredDatas)
-	require.Len(t, db.ValidDatas, 1)
+	require.Len(t, db.Datas, 1)
 	require.Equal(t, "7.2.4", rdb.Aux.Version)
 	require.Equal(t, uint8(64), rdb.Aux.Bits)
 	require.Equal(t, uint32(1719840523), rdb.Aux.Ctime)
-	data, ok := db.ValidDatas["mykey"]
+	data, ok := db.Datas["mykey"]
 	require.True(t, ok)
 	require.Equal(t, "myval", data.Value)
-	require.False(t, data.Expired)
-	require.Empty(t, data.ExpireTimestampMS)
+	require.Equal(t, uint64(0), data.ExpireTimestampMS)
+}
+
+func TestUnMarshalRDBWithExpiredKey(t *testing.T) {
+	// hexdump
+	// 00000000  52 45 44 49 53 30 30 30  33 fa 09 72 65 64 69 73  |REDIS0003..redis|
+	// 00000010  2d 76 65 72 05 37 2e 32  2e 30 fa 0a 72 65 64 69  |-ver.7.2.0..redi|
+	// 00000020  73 2d 62 69 74 73 c0 40  fe 00 fb 04 04 fc 00 0c  |s-bits.@........|
+	// 00000030  28 8a c7 01 00 00 00 06  62 61 6e 61 6e 61 05 61  |(.......banana.a|
+	// 00000040  70 70 6c 65 fc 00 9c ef  12 7e 01 00 00 00 09 62  |pple.....~.....b|
+	// 00000050  6c 75 65 62 65 72 72 79  05 6d 61 6e 67 6f fc 00  |lueberry.mango..|
+	// 00000060  0c 28 8a c7 01 00 00 00  05 67 72 61 70 65 0a 73  |.(.......grape.s|
+	// 00000070  74 72 61 77 62 65 72 72  79 fc 00 0c 28 8a c7 01  |trawberry...(...|
+	// 00000080  00 00 00 09 72 61 73 70  62 65 72 72 79 09 62 6c  |....raspberry.bl|
+	// 00000090  75 65 62 65 72 72 79 ff  7d 45 d2 9c 71 90 df 75  |ueberry.}E..q..u|
+	// 000000a0  0a                                                |.|
+	// 000000a1
+	b, err := os.ReadFile("./has_expired_key.rdb")
+	require.NoError(t, err)
+
+	rdb, err := UnMarshalRDB(b)
+	require.NoError(t, err)
+	db := rdb.DBs[0]
+	require.Len(t, db.Datas, 4)
+	require.Equal(t, "7.2.0", rdb.Aux.Version)
+	require.Equal(t, uint8(64), rdb.Aux.Bits)
+	require.Empty(t, rdb.Aux.Ctime)
+	v1, ok := db.Datas["banana"]
+	require.True(t, ok)
+	require.Equal(t, "apple", v1.Value)
+	require.Equal(t, uint64(1956528000000), v1.ExpireTimestampMS)
+	v2, ok := db.Datas["blueberry"]
+	require.True(t, ok)
+	require.Equal(t, "mango", v2.Value)
+	require.Equal(t, uint64(1640995200000), v2.ExpireTimestampMS)
+	v3, ok := db.Datas["grape"]
+	require.True(t, ok)
+	require.Equal(t, "strawberry", v3.Value)
+	require.Equal(t, uint64(1956528000000), v3.ExpireTimestampMS)
+	v4, ok := db.Datas["raspberry"]
+	require.True(t, ok)
+	require.Equal(t, "blueberry", v4.Value)
+	require.Equal(t, uint64(1956528000000), v4.ExpireTimestampMS)
 }

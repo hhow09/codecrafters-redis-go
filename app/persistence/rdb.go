@@ -6,12 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 
 	"github.com/codecrafters-io/redis-starter-go/app/database"
 )
 
-// ref: https://rdb.fnordig.de/file_format.html#auxiliary-fields
+// ref: https://rdb.fnordig.de/file_fo	rmat.html#auxiliary-fields
 
 const (
 	redisDefaultDBSize = 16
@@ -50,9 +51,8 @@ type RDB struct {
 }
 
 type Database struct {
-	Index        int
-	ValidDatas   map[string]database.Data
-	ExpiredDatas map[string]database.Data
+	Index int
+	Datas map[string]database.Data
 }
 
 type Aux struct {
@@ -130,12 +130,11 @@ func UnMarshalRDB(b []byte) (*RDB, error) {
 			}
 			currDB = rdb.DBs[int(sz)]
 		case opCodeHashSize:
-			valid, expired, err := UnMarshalHashTable(buf)
+			t, err := UnMarshalHashTable(buf)
 			if err != nil {
 				return nil, fmt.Errorf("fail unmarshal hash table: %w", err)
 			}
-			currDB.ValidDatas = valid
-			currDB.ExpiredDatas = expired
+			currDB.Datas = t
 		default:
 			return nil, fmt.Errorf("unknown opCode: %d", opCode)
 		}
@@ -207,51 +206,43 @@ func UnMarshalAux(buf *bytes.Buffer) (*Aux, error) {
 	return aux, nil
 }
 
-func UnMarshalHashTable(buf *bytes.Buffer) (valid map[string]database.Data, expired map[string]database.Data, err error) {
-	validtableSize, spf, err := decodeSizeUint(buf)
+func UnMarshalHashTable(buf *bytes.Buffer) (map[string]database.Data, error) {
+	tableSize, spf, err := decodeSizeUint(buf)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fail to decode size encoding: %w", err)
+		return nil, fmt.Errorf("fail to decode size encoding: %w", err)
 	}
 	if spf {
-		return nil, nil, fmt.Errorf("wrong resize db encoding found")
+		return nil, fmt.Errorf("wrong resize db encoding found")
 	}
-	expiredTableSize, spf, err := decodeSizeUint(buf)
+	expiryTableSize, spf, err := decodeSizeUint(buf)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fail to decode size encoding: %w", err)
+		return nil, fmt.Errorf("fail to decode size encoding: %w", err)
 	}
 	if spf {
-		return nil, nil, fmt.Errorf("wrong resize db encoding found")
+		return nil, fmt.Errorf("wrong resize db encoding found")
 	}
-	if validtableSize > 0 {
-		valid, err = readTable(buf, validtableSize)
+	log.Printf("UnMarshalHashTable tableSize: %d, expiryTableSize: %d\n", tableSize, expiryTableSize)
+	if tableSize > 0 {
+		tb, err := readTable(buf, tableSize)
 		if err != nil {
-			return nil, nil, fmt.Errorf("fail read table: %w", err)
+			return nil, fmt.Errorf("fail read table: %w", err)
 		}
+		return tb, nil
 	}
-	if expiredTableSize > 0 {
-		expired, err = readTable(buf, expiredTableSize)
-		if err != nil {
-			return nil, nil, fmt.Errorf("fail read table: %w", err)
-		}
-	}
-
-	return
+	return nil, nil
 }
 
 func readTable(buf *bytes.Buffer, size uint32) (map[string]database.Data, error) {
 	count := uint32(0)
 	m := map[string]database.Data{}
 	for count < size {
-		keyType, err := buf.ReadByte()
+		firstByte, err := buf.ReadByte()
 		if err != nil {
 			return nil, err
 		}
 		ts := uint64(0)
-		expired := false
-		switch keyType {
-		case stringEncoding:
+		switch firstByte {
 		case opCodeExpireTimeMS:
-			expired = true
 			timestampB := make([]byte, 8)
 			_, err := buf.Read(timestampB)
 			if err != nil {
@@ -260,7 +251,6 @@ func readTable(buf *bytes.Buffer, size uint32) (map[string]database.Data, error)
 			ts = binary.LittleEndian.Uint64(timestampB)
 
 		case opCodeExpireTime:
-			expired = true
 			timestampB := make([]byte, 4)
 			_, err := buf.Read(timestampB)
 			if err != nil {
@@ -268,25 +258,35 @@ func readTable(buf *bytes.Buffer, size uint32) (map[string]database.Data, error)
 			}
 			tsS := binary.LittleEndian.Uint32(timestampB)
 			ts = uint64(tsS * 1000)
-
 		default:
-			return nil, fmt.Errorf("type not implemented")
+			// for normal key-value, the there is no opCode
+			// since the firstByte is actually the keyType
+			if err := buf.UnreadByte(); err != nil {
+				return m, fmt.Errorf("fail to unread byte")
+			}
 		}
-
-		key, _, err := readStringEncoding(buf)
+		keyType, err := buf.ReadByte()
 		if err != nil {
-			return m, fmt.Errorf("fail to read key")
+			return m, fmt.Errorf("fail to read key type")
 		}
-		val, _, err := readStringEncoding(buf)
-		if err != nil {
-			return m, fmt.Errorf("fail to read val")
+		switch keyType {
+		case stringEncoding:
+			key, _, err := readStringEncoding(buf)
+			if err != nil {
+				return m, fmt.Errorf("fail to read key")
+			}
+			val, _, err := readStringEncoding(buf)
+			if err != nil {
+				return m, fmt.Errorf("fail to read val")
+			}
+			m[key] = database.Data{
+				Value:             val,
+				ExpireTimestampMS: ts,
+			}
+			count += 1
+		default:
+			return m, fmt.Errorf("key type %v not supported yet", keyType)
 		}
-		m[key] = database.Data{
-			Value:             val,
-			Expired:           expired,
-			ExpireTimestampMS: ts,
-		}
-		count += 1
 
 	}
 	return m, nil

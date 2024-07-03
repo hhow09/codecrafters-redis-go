@@ -26,13 +26,16 @@ func LoadRDB(config Config) ([]*database.DB, error) {
 	if err != nil {
 		return defaultDBs, nil
 	}
+	if err := os.WriteFile("./mykey_myval.rdb", b, 0644); err != nil {
+		return nil, fmt.Errorf("fail to write rdb file: %w", err)
+	}
 	rdb, err := UnMarshalRDB(b)
 	if err != nil {
 		return nil, fmt.Errorf("fail to unmarshal rdb file: %w", err)
 	}
 	dbs := make([]*database.DB, len(rdb.DBs))
 	for i, db := range rdb.DBs {
-		dbs[i] = database.NewFromLoad(db.ValidDatas)
+		dbs[i] = database.NewFromLoad(db.Datas)
 	}
 	return dbs, nil
 }
