@@ -11,6 +11,10 @@ var (
 	testCfg = config{}
 )
 
+const (
+	host = "localhost"
+)
+
 func dialWithRetry(maxRetry int, host, port string) (net.Conn, error) {
 	var conn net.Conn
 	var err error

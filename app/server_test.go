@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codecrafters-io/redis-starter-go/app/database"
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +17,7 @@ func TestPing(t *testing.T) {
 
 	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
-	s := newServer("localhost", "8081", mockdbs, RoleMaster, testCfg)
+	s := newServer(host, "8081", mockdbs, RoleMaster, testCfg)
 	go func() {
 		err := s.handler(server)
 		require.NoError(t, err)
@@ -35,7 +36,7 @@ func TestEcho(t *testing.T) {
 
 	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
-	s := newServer("localhost", "8082", mockdbs, RoleMaster, testCfg)
+	s := newServer(host, "8082", mockdbs, RoleMaster, testCfg)
 	go func() {
 		err := s.handler(server)
 		require.NoError(t, err)
@@ -53,7 +54,7 @@ func TestEcho(t *testing.T) {
 
 func TestSetGet(t *testing.T) {
 	port := "8083"
-	s := newServer("localhost", port, mockdbs, RoleMaster, testCfg)
+	s := newServer(host, port, mockdbs, RoleMaster, testCfg)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go s.Start(c, s.handler)
@@ -80,4 +81,37 @@ func TestSetGet(t *testing.T) {
 	res2_2, err := r.ReadBytes('\n')
 	require.NoError(t, err)
 	require.Equal(t, resp.NewBulkString("value1"), append(res2_1, res2_2...))
+}
+
+func TestIncr(t *testing.T) {
+	port := "8090"
+	dbs := []*database.DB{
+		database.NewDB(),
+	}
+	dbs[defaultDBIdx].Set("intKey", "1")
+	dbs[defaultDBIdx].Set("nonIntKey", "abc")
+	s := newServer(host, port, dbs, RoleMaster, testCfg)
+	c := make(chan os.Signal, 1)
+	defer close(c)
+	go s.Start(c, s.handler)
+
+	conn, err := dialWithRetry(3, host, port)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	require.NoError(t, conn.SetDeadline(time.Now().Add(2*time.Second)))
+
+	_, err = conn.Write(resp.NewArray([][]byte{resp.NewBulkString("INCR"), resp.NewBulkString("key1")}))
+	require.NoError(t, err)
+
+	r := bufio.NewReader(conn)
+	res1, err := r.ReadBytes('\n')
+	require.NoError(t, err)
+	require.Equal(t, resp.NewInt(1), res1)
+
+	_, err = conn.Write(resp.NewArray([][]byte{resp.NewBulkString("INCR"), resp.NewBulkString("nonIntKey")}))
+	require.NoError(t, err)
+	res2, err := r.ReadBytes('\n')
+	require.NoError(t, err)
+	require.Equal(t, resp.NewErrorMSG("value is not an integer or out of range"), res2)
 }

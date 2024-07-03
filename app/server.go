@@ -196,7 +196,13 @@ func (s *server) handler(conn net.Conn) (err error) {
 				return err
 			}
 
-			// https://redis.io/docs/latest/commands/keys/
+		// https://redis.io/docs/latest/commands/incr/
+		case "INCR":
+			if err := handleIncr(conn, arr, s.db); err != nil {
+				return err
+			}
+
+		// https://redis.io/docs/latest/commands/keys/
 		case "KEYS":
 			if err := handleKeys(conn, arr, s.db); err != nil {
 				return err
@@ -339,6 +345,32 @@ func handleGet(conn net.Conn, arr []string, db *database.DB) error {
 		}
 	}
 	return nil
+}
+
+func handleIncr(conn net.Conn, arr []string, db *database.DB) error {
+	if len(arr) != 2 {
+		return fmt.Errorf("expecting 2 arguments")
+	}
+	value := db.Get(arr[1])
+	parsedIntVal := 0 // default
+	var err error
+	if value != "" {
+		// The string stored at the key is interpreted as a base-10 64 bit signed integer to execute the operation.
+		parsedIntVal, err = strconv.Atoi(value)
+		if err != nil {
+			if _, err := conn.Write(resp.NewErrorMSG("value is not an integer or out of range")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+	}
+	increasedVal := parsedIntVal + 1
+	db.Set(arr[1], strconv.Itoa(increasedVal))
+	if _, err := conn.Write(resp.NewInt(increasedVal)); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
+	}
+	return nil
+
 }
 
 func handleWait(conn net.Conn, arr []string, backlog *replication.ReplicatinoBacklog) error {
