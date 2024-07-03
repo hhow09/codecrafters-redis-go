@@ -75,12 +75,17 @@ type server struct {
 	host               string
 	port               string
 	dbs                []*database.DB
-	db                 *database.DB
 	role               string
 	masterReplid       string
 	masterOffset       uint64
 	replicationBacklog *replication.ReplicatinoBacklog
 	config             config
+	*state
+}
+
+type state struct {
+	db      *database.DB // selected db
+	isMulti bool
 }
 
 type config struct {
@@ -94,13 +99,16 @@ func newServer(host, port string, dbs []*database.DB, role string, config config
 		host:         host,
 		port:         port,
 		dbs:          dbs,
-		db:           dbs[defaultDBIdx], // current db
 		masterReplid: replication.GenReplicationID(),
 		masterOffset: 0,
 
 		role:               role,
 		replicationBacklog: replication.NewReplicationBacklog(backlogSizePerReplica),
 		config:             config,
+		state: &state{
+			db:      dbs[defaultDBIdx],
+			isMulti: false,
+		},
 	}
 }
 
@@ -203,9 +211,19 @@ func (s *server) handler(conn net.Conn) (err error) {
 			}
 		// https://redis.io/docs/latest/commands/multi/
 		case "MULTI":
+			s.isMulti = true
 			if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
+		// https://redis.io/docs/latest/commands/exec/
+		case "EXEC":
+			if !s.isMulti {
+				if _, err := conn.Write(resp.NewErrorMSG("EXEC without MULTI")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+			}
+			// TODO
+			s.isMulti = false
 
 		// https://redis.io/docs/latest/commands/keys/
 		case "KEYS":
