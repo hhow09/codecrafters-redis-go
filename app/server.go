@@ -201,6 +201,11 @@ func (s *server) handler(conn net.Conn) (err error) {
 			if err := handleIncr(conn, arr, s.db); err != nil {
 				return err
 			}
+		// https://redis.io/docs/latest/commands/multi/
+		case "MULTI":
+			if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
 
 		// https://redis.io/docs/latest/commands/keys/
 		case "KEYS":
