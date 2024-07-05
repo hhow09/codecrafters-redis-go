@@ -166,6 +166,7 @@ func (s *server) handler(conn net.Conn) (err error) {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 		}
+		// these are command need to handle before queueing
 		switch arr[0] {
 		case "REPLCONF":
 			if len(arr) != 3 {
@@ -185,7 +186,22 @@ func (s *server) handler(conn net.Conn) (err error) {
 				return err
 			}
 			continue
+			// https://redis.io/docs/latest/commands/discard/
+		case "DISCARD":
+			if state.isMulti {
+				state.isMulti = false
+				state.cmdQueue = nil
+				if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+			} else {
+				if _, err := conn.Write(resp.NewErrorMSG("DISCARD without MULTI")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+			}
+			continue
 		}
+
 		if state.isMulti {
 			if err := s.handleQueuing(conn, arr, state); err != nil {
 				return err
