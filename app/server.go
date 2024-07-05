@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -75,17 +76,12 @@ type server struct {
 	host               string
 	port               string
 	dbs                []*database.DB
+	db                 *database.DB // selected db
 	role               string
 	masterReplid       string
 	masterOffset       uint64
 	replicationBacklog *replication.ReplicatinoBacklog
 	config             config
-	*state
-}
-
-type state struct {
-	db      *database.DB // selected db
-	isMulti bool
 }
 
 type config struct {
@@ -105,10 +101,7 @@ func newServer(host, port string, dbs []*database.DB, role string, config config
 		role:               role,
 		replicationBacklog: replication.NewReplicationBacklog(backlogSizePerReplica),
 		config:             config,
-		state: &state{
-			db:      dbs[defaultDBIdx],
-			isMulti: false,
-		},
+		db:                 dbs[defaultDBIdx],
 	}
 }
 
@@ -141,9 +134,15 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 	fmt.Printf("[%s, %s] Shutting down server: %v\n", s.port, s.role, sig)
 }
 
+type clientState struct {
+	isMulti  bool
+	cmdQueue [][]string
+}
+
 func (s *server) handler(conn net.Conn) (err error) {
 	r := bufio.NewReader(conn)
 	defer conn.Close()
+	state := &clientState{}
 	for {
 		typ, err := resp.CheckDataType(r)
 		if err != nil {
@@ -168,81 +167,6 @@ func (s *server) handler(conn net.Conn) (err error) {
 			}
 		}
 		switch arr[0] {
-		// https://redis.io/docs/latest/commands/ping/
-		// [PING]
-		case "PING":
-			if err := handlePing(conn); err != nil {
-				return err
-			}
-		// https://redis.io/docs/latest/commands/echo/
-		// [ECHO, message]
-		case "ECHO":
-			if err := handleEcho(conn, arr); err != nil {
-				return err
-			}
-		// https://redis.io/docs/latest/commands/set/
-		// [SET, key, value]
-		case "SET":
-			if err := handleSet(conn, arr, s.db); err != nil {
-				return err
-			}
-			if s.role == RoleMaster {
-				// store commands in replication buffer
-				msg := replication.Msg{
-					Data:               resp.NewSetCmd(arr),
-					ShouldWaitResponse: false,
-				}
-				s.replicationBacklog.BroardcastBacklog(msg)
-				_, err := conn.Write(resp.NewSimpleString("OK"))
-				if err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-			}
-		// [GET, key]
-		case "GET":
-			if err := handleGet(conn, arr, s.db); err != nil {
-				return err
-			}
-
-		// https://redis.io/docs/latest/commands/incr/
-		case "INCR":
-			if err := handleIncr(conn, arr, s.db); err != nil {
-				return err
-			}
-		// https://redis.io/docs/latest/commands/multi/
-		case "MULTI":
-			s.isMulti = true
-			if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-		// https://redis.io/docs/latest/commands/exec/
-		case "EXEC":
-			if !s.isMulti {
-				if _, err := conn.Write(resp.NewErrorMSG("EXEC without MULTI")); err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-			}
-			// TODO
-			s.isMulti = false
-
-		// https://redis.io/docs/latest/commands/keys/
-		case "KEYS":
-			if err := handleKeys(conn, arr, s.db); err != nil {
-				return err
-			}
-		case "INFO":
-			if len(arr) > 1 {
-				if arr[1] == "replication" {
-					if _, err := conn.Write(resp.NewBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset))); err != nil {
-						return fmt.Errorf("error writing to connection: %s", err.Error())
-					}
-
-				}
-			}
-			// TODO
-		// REPLCONF <option> <value> <option> <value> ...
-		// This command is used by a replica in order to configure the replication process before starting it with the SYNC command.
-		// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
 		case "REPLCONF":
 			if len(arr) != 3 {
 				if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
@@ -254,70 +178,204 @@ func (s *server) handler(conn net.Conn) (err error) {
 			case "listening-port":
 				// should hand over the connection ownership to replica connection and not use the reader here anymore.
 				return s.handleReiplicaHanshake(conn, r, arr[2])
-
-			case "GETACK":
-				msg := replication.Msg{
-					Data:               resp.NewArray([][]byte{resp.NewBulkString(arr[0]), resp.NewBulkString(arr[1]), resp.NewBulkString(arr[2])}),
-					ShouldWaitResponse: false,
-				}
-				s.replicationBacklog.BroardcastBacklog(msg)
 			}
-			if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-
-		// [WAIT numreplicas timeout]
-		// ref: https://redis.io/docs/latest/commands/wait/
-		// The WAIT command should return when either (a) the specified number of replicas have acknowledged the command, or (b) the timeout expires.
-		// The WAIT command should always return the number of replicas that have acknowledged the command, even if the timeout expires.
-		// The returned number of replicas might be lesser than or greater than the expected number of replicas specified in the WAIT command.
-		// ref: https://app.codecrafters.io/courses/redis/stages/na2
-		case "WAIT":
-			if err := handleWait(conn, arr, s.replicationBacklog); err != nil {
+		// https://redis.io/docs/latest/commands/exec/
+		case "EXEC":
+			if err := s.handleExec(conn, state); err != nil {
 				return err
 			}
-
-		// CONFIG GET parameter [parameter ...]
-		// ref: https://redis.io/docs/latest/commands/config-get/
-		case "CONFIG":
-			if len(arr) < 3 {
-				if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-				return nil
+			continue
+		}
+		if state.isMulti {
+			if err := s.handleQueuing(conn, arr, state); err != nil {
+				return err
 			}
-			switch arr[1] {
-			case "GET":
-				res := [][]byte{}
-				for i := 2; i < len(arr); i++ {
-					switch arr[i] {
-					case "dir":
-						res = append(res, resp.NewBulkString("dir"), resp.NewBulkString(s.config.persistence.Dir)) // key, value
-					case "dbfilename":
-						res = append(res, resp.NewBulkString("dbfilename"), resp.NewBulkString(s.config.persistence.Dbfilename)) // key, value
-					}
-				}
-				if _, err := conn.Write(resp.NewArray(res)); err != nil {
-					return fmt.Errorf("error writing to connection: %s", err.Error())
-				}
-			}
-
-		default:
-			if _, err := conn.Write([]byte(resp.NewErrorMSG("unknown command " + arr[0]))); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
+			continue
+		}
+		if err := s.handleWriteOnlyCmd(conn, arr, state); err != nil {
+			return err
 		}
 	}
 }
 
-func handlePing(conn net.Conn) error {
+func (s *server) handleQueuing(conn io.Writer, arr []string, state *clientState) error {
+	state.cmdQueue = append(state.cmdQueue, arr)
+	if _, err := conn.Write(resp.NewSimpleString("QUEUED")); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+// handleExec execute the queued commands.
+func (s *server) handleExec(conn io.Writer, state *clientState) error {
+	if !state.isMulti {
+		if _, err := conn.Write(resp.NewErrorMSG("EXEC without MULTI")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	} else {
+		res := make([][]byte, len(state.cmdQueue))
+		for i, cmd := range state.cmdQueue {
+			buff := bytes.NewBuffer(nil)
+			if err := s.handleWriteOnlyCmd(buff, cmd, state); err != nil {
+				return err
+			}
+			res[i] = buff.Bytes()
+		}
+		if _, err := conn.Write(resp.NewArray(res)); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	state.isMulti = false
+	state.cmdQueue = nil
+	return nil
+}
+
+// when entering this function, we do not read from connection anymore.
+func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientState) error {
+	switch arr[0] {
+	// https://redis.io/docs/latest/commands/ping/
+	// [PING]
+	case "PING":
+		if err := handlePing(conn); err != nil {
+			return err
+		}
+	// https://redis.io/docs/latest/commands/echo/
+	// [ECHO, message]
+	case "ECHO":
+		if err := handleEcho(conn, arr); err != nil {
+			return err
+		}
+	// https://redis.io/docs/latest/commands/set/
+	// [SET, key, value]
+	case "SET":
+		if err := handleSet(conn, arr, s.db); err != nil {
+			return err
+		}
+		if s.role == RoleMaster {
+			// store commands in replication buffer
+			msg := replication.Msg{
+				Data:               resp.NewSetCmd(arr),
+				ShouldWaitResponse: false,
+			}
+			s.replicationBacklog.BroardcastBacklog(msg)
+			_, err := conn.Write(resp.NewSimpleString("OK"))
+			if err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+		}
+	// [GET, key]
+	case "GET":
+		if err := handleGet(conn, arr, s.db); err != nil {
+			return err
+		}
+
+	// https://redis.io/docs/latest/commands/incr/
+	case "INCR":
+		if err := handleIncr(conn, arr, s.db); err != nil {
+			return err
+		}
+	// https://redis.io/docs/latest/commands/multi/
+	// https://redis.io/docs/latest/develop/interact/transactions/
+	case "MULTI":
+		if state.isMulti {
+			if _, err := conn.Write(resp.NewErrorMSG("already in MULTI")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+		}
+		state.isMulti = true
+		if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+
+	// https://redis.io/docs/latest/commands/keys/
+	case "KEYS":
+		if err := handleKeys(conn, arr, s.db); err != nil {
+			return err
+		}
+	case "INFO":
+		if len(arr) > 1 {
+			if arr[1] == "replication" {
+				if _, err := conn.Write(resp.NewBulkString(fmt.Sprintf("role:%s\nmaster_replid:%s\nmaster_repl_offset:%d", s.role, s.masterReplid, s.masterOffset))); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+
+			}
+		}
+		// TODO
+	// REPLCONF <option> <value> <option> <value> ...
+	// This command is used by a replica in order to configure the replication process before starting it with the SYNC command.
+	// ref: https://github.com/redis/redis/blob/811c5d7aeb0b76494d78efe61e418f574c310ec0/src/replication.c#L1114C4-L1114C50
+	case "REPLCONF":
+		if len(arr) != 3 {
+			if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		switch arr[1] {
+		case "GETACK":
+			msg := replication.Msg{
+				Data:               resp.NewArray([][]byte{resp.NewBulkString(arr[0]), resp.NewBulkString(arr[1]), resp.NewBulkString(arr[2])}),
+				ShouldWaitResponse: false,
+			}
+			s.replicationBacklog.BroardcastBacklog(msg)
+		}
+		if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+
+	// [WAIT numreplicas timeout]
+	// ref: https://redis.io/docs/latest/commands/wait/
+	// The WAIT command should return when either (a) the specified number of replicas have acknowledged the command, or (b) the timeout expires.
+	// The WAIT command should always return the number of replicas that have acknowledged the command, even if the timeout expires.
+	// The returned number of replicas might be lesser than or greater than the expected number of replicas specified in the WAIT command.
+	// ref: https://app.codecrafters.io/courses/redis/stages/na2
+	case "WAIT":
+		if err := handleWait(conn, arr, s.replicationBacklog); err != nil {
+			return err
+		}
+
+	// CONFIG GET parameter [parameter ...]
+	// ref: https://redis.io/docs/latest/commands/config-get/
+	case "CONFIG":
+		if len(arr) < 3 {
+			if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		switch arr[1] {
+		case "GET":
+			res := [][]byte{}
+			for i := 2; i < len(arr); i++ {
+				switch arr[i] {
+				case "dir":
+					res = append(res, resp.NewBulkString("dir"), resp.NewBulkString(s.config.persistence.Dir)) // key, value
+				case "dbfilename":
+					res = append(res, resp.NewBulkString("dbfilename"), resp.NewBulkString(s.config.persistence.Dbfilename)) // key, value
+				}
+			}
+			if _, err := conn.Write(resp.NewArray(res)); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+		}
+
+	default:
+		if _, err := conn.Write([]byte(resp.NewErrorMSG("unknown command " + arr[0]))); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	return nil
+}
+
+func handlePing(conn io.Writer) error {
 	if _, err := conn.Write(resp.NewSimpleString("PONG")); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
 	return nil
 }
 
-func handleEcho(conn net.Conn, arr []string) error {
+func handleEcho(conn io.Writer, arr []string) error {
 	if len(arr) < 2 {
 		if _, err := conn.Write(resp.NewErrorMSG("expecting 2 arguments")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
@@ -351,7 +409,7 @@ func handleSet(conn io.Writer, arr []string, db *database.DB) error {
 	return nil
 }
 
-func handleGet(conn net.Conn, arr []string, db *database.DB) error {
+func handleGet(conn io.Writer, arr []string, db *database.DB) error {
 	if len(arr) < 2 {
 		if _, err := conn.Write(resp.NewErrorMSG("expecting 2 arguments")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
@@ -370,7 +428,7 @@ func handleGet(conn net.Conn, arr []string, db *database.DB) error {
 	return nil
 }
 
-func handleIncr(conn net.Conn, arr []string, db *database.DB) error {
+func handleIncr(conn io.Writer, arr []string, db *database.DB) error {
 	if len(arr) != 2 {
 		return fmt.Errorf("expecting 2 arguments")
 	}
@@ -396,7 +454,7 @@ func handleIncr(conn net.Conn, arr []string, db *database.DB) error {
 
 }
 
-func handleWait(conn net.Conn, arr []string, backlog *replication.ReplicatinoBacklog) error {
+func handleWait(conn io.Writer, arr []string, backlog *replication.ReplicatinoBacklog) error {
 	if len(arr) != 3 {
 		if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
@@ -426,7 +484,7 @@ func handleWait(conn net.Conn, arr []string, backlog *replication.ReplicatinoBac
 	return nil
 }
 
-func handleKeys(conn net.Conn, arr []string, db *database.DB) error {
+func handleKeys(conn io.Writer, arr []string, db *database.DB) error {
 	if len(arr) != 2 {
 		return fmt.Errorf("invliad keys length")
 	}
