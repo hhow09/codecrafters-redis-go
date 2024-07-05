@@ -16,8 +16,17 @@ type DB struct {
 }
 
 type Data struct {
+	Type              string
 	Value             string
 	ExpireTimestampMS uint64
+}
+
+func NewData(type_ string, value string, expireTimestampMS uint64) Data {
+	return Data{
+		Type:              type_,
+		Value:             value,
+		ExpireTimestampMS: expireTimestampMS,
+	}
 }
 
 func NewDB() *DB {
@@ -36,34 +45,36 @@ func NewFromLoad(datas map[string]Data) *DB {
 }
 
 func (d *DB) Get(key string) string {
+	return d.get(key).Value
+}
+
+func (d *DB) get(key string) Data {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	if data, ok := d.datas[key]; ok {
 		if data.ExpireTimestampMS != NO_EXPIRY && uint64(time.Now().UnixMilli()) > data.ExpireTimestampMS {
 			delete(d.datas, key)
-			return ""
+			return Data{}
 		}
-		return data.Value
+		return data
 	}
-	return ""
+	return Data{}
+}
+
+func (d *DB) Type(key string) string {
+	return d.get(key).Type
 }
 
 func (d *DB) Set(key, value string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.datas[key] = Data{
-		Value:             value,
-		ExpireTimestampMS: NO_EXPIRY,
-	}
+	d.datas[key] = NewData(TypeString, value, NO_EXPIRY)
 }
 
 func (d *DB) SetExp(key, value string, exp int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.datas[key] = Data{
-		Value:             value,
-		ExpireTimestampMS: uint64(exp),
-	}
+	d.datas[key] = NewData(TypeString, value, uint64(exp))
 }
 
 func (d *DB) Keys(reg *regexp.Regexp) []string {

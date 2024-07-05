@@ -302,8 +302,25 @@ func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientS
 		if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
 			return fmt.Errorf("error writing to connection: %s", err.Error())
 		}
-
-	// https://redis.io/docs/latest/commands/keys/
+	// https://redis.io/docs/latest/commands/type/
+	case "TYPE":
+		if len(arr) != 2 {
+			if _, err := conn.Write(resp.NewErrorMSG("expecting 2 arguments")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		typ := s.db.Type(arr[1])
+		if typ == "" {
+			if _, err := conn.Write(resp.NewSimpleString("none")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+		} else {
+			if _, err := conn.Write(resp.NewBulkString(typ)); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+		}
+		// https://redis.io/docs/latest/commands/keys/
 	case "KEYS":
 		if err := handleKeys(conn, arr, s.db); err != nil {
 			return err
