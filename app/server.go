@@ -290,6 +290,39 @@ func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientS
 		if err := handleIncr(conn, arr, s.db); err != nil {
 			return err
 		}
+
+	case "XADD":
+		if len(arr) < 4 {
+			if _, err := conn.Write(resp.NewErrorMSG("expecting >= 5 arguments")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		if (len(arr)-3)%2 != 0 {
+			if _, err := conn.Write(resp.NewErrorMSG("expecting even key value arguments")); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		lkv := (len(arr) - 3) / 2
+		kvs := make([]database.KeyValue, lkv)
+		for i := 0; i < lkv; i++ {
+			kvs[i] = database.KeyValue{
+				Key:   arr[3+i*2],
+				Value: arr[3+i*2+1],
+			}
+		}
+		id, err := s.db.XAdd(arr[1], arr[2], kvs)
+		if err != nil {
+			if _, err := conn.Write(resp.NewErrorMSG(err.Error())); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		if _, err := conn.Write(resp.NewBulkString(id)); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+
 	// https://redis.io/docs/latest/commands/multi/
 	// https://redis.io/docs/latest/develop/interact/transactions/
 	case "MULTI":

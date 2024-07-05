@@ -279,7 +279,7 @@ func readTable(buf *bytes.Buffer, size uint32) (map[string]database.Data, error)
 			if err != nil {
 				return m, fmt.Errorf("fail to read val")
 			}
-			m[key] = database.NewData(database.TypeString, val, ts)
+			m[key] = database.NewString(val, ts)
 			count += 1
 		default:
 			return m, fmt.Errorf("key type %v not supported yet", keyType)
