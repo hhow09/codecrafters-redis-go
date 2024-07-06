@@ -52,7 +52,7 @@ type RDB struct {
 
 type Database struct {
 	Index int
-	Datas map[string]database.Data
+	Datas map[string]*database.Data
 }
 
 type Aux struct {
@@ -206,7 +206,7 @@ func UnMarshalAux(buf *bytes.Buffer) (*Aux, error) {
 	return aux, nil
 }
 
-func UnMarshalHashTable(buf *bytes.Buffer) (map[string]database.Data, error) {
+func UnMarshalHashTable(buf *bytes.Buffer) (map[string]*database.Data, error) {
 	tableSize, spf, err := decodeSizeUint(buf)
 	if err != nil {
 		return nil, fmt.Errorf("fail to decode size encoding: %w", err)
@@ -232,9 +232,9 @@ func UnMarshalHashTable(buf *bytes.Buffer) (map[string]database.Data, error) {
 	return nil, nil
 }
 
-func readTable(buf *bytes.Buffer, size uint32) (map[string]database.Data, error) {
+func readTable(buf *bytes.Buffer, size uint32) (map[string]*database.Data, error) {
 	count := uint32(0)
-	m := map[string]database.Data{}
+	m := map[string]*database.Data{}
 	for count < size {
 		firstByte, err := buf.ReadByte()
 		if err != nil {
