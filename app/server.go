@@ -167,7 +167,7 @@ func (s *server) handler(conn net.Conn) (err error) {
 			}
 		}
 		// these are command need to handle before queueing
-		switch arr[0] {
+		switch strings.ToUpper(arr[0]) {
 		case "REPLCONF":
 			if len(arr) != 3 {
 				if _, err := conn.Write(resp.NewErrorMSG("expecting 3 arguments")); err != nil {
@@ -248,7 +248,7 @@ func (s *server) handleExec(conn io.Writer, state *clientState) error {
 
 // when entering this function, we do not read from connection anymore.
 func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientState) error {
-	switch arr[0] {
+	switch strings.ToUpper(arr[0]) {
 	// https://redis.io/docs/latest/commands/ping/
 	// [PING]
 	case "PING":
@@ -292,37 +292,15 @@ func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientS
 		}
 
 	case "XADD":
-		if len(arr) < 4 {
-			if _, err := conn.Write(resp.NewErrorMSG("expecting >= 5 arguments")); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-			return nil
+		if err := handleXAdd(conn, arr, s.db); err != nil {
+			return err
 		}
-		if (len(arr)-3)%2 != 0 {
-			if _, err := conn.Write(resp.NewErrorMSG("expecting even key value arguments")); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-			return nil
+	// https://redis.io/docs/latest/commands/xrange/
+	// XRANGE key start end [COUNT count]
+	case "XRANGE":
+		if err := handleXRange(conn, arr, s.db); err != nil {
+			return err
 		}
-		lkv := (len(arr) - 3) / 2
-		kvs := make([]database.KeyValue, lkv)
-		for i := 0; i < lkv; i++ {
-			kvs[i] = database.KeyValue{
-				Key:   arr[3+i*2],
-				Value: arr[3+i*2+1],
-			}
-		}
-		id, err := s.db.XAdd(arr[1], arr[2], kvs)
-		if err != nil {
-			if _, err := conn.Write(resp.NewErrorMSG(err.Error())); err != nil {
-				return fmt.Errorf("error writing to connection: %s", err.Error())
-			}
-			return nil
-		}
-		if _, err := conn.Write(resp.NewBulkString(id)); err != nil {
-			return fmt.Errorf("error writing to connection: %s", err.Error())
-		}
-
 	// https://redis.io/docs/latest/commands/multi/
 	// https://redis.io/docs/latest/develop/interact/transactions/
 	case "MULTI":
@@ -566,6 +544,73 @@ func handleKeys(conn io.Writer, arr []string, db *database.DB) error {
 	res := make([][]byte, len(keys))
 	for i, k := range keys {
 		res[i] = resp.NewBulkString(k)
+	}
+	if _, err := conn.Write(resp.NewArray(res)); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+func handleXAdd(conn io.Writer, arr []string, db *database.DB) error {
+	if len(arr) < 4 {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting >= 5 arguments")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	if (len(arr)-3)%2 != 0 {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting even key value arguments")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	lkv := (len(arr) - 3) / 2
+	kvs := make([]database.KeyValue, lkv)
+	for i := 0; i < lkv; i++ {
+		kvs[i] = database.KeyValue{
+			Key:   arr[3+i*2],
+			Value: arr[3+i*2+1],
+		}
+	}
+	id, err := db.XAdd(arr[1], arr[2], kvs)
+	if err != nil {
+		if _, err := conn.Write(resp.NewErrorMSG(err.Error())); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	if _, err := conn.Write(resp.NewBulkString(id)); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+func handleXRange(conn io.Writer, arr []string, db *database.DB) error {
+	if len(arr) < 4 {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting >= 4 arguments")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+	}
+	key, start, end := arr[1], arr[2], arr[3]
+	ents, err := db.Xrange(key, start, end)
+	if err != nil {
+		if _, err := conn.Write(resp.NewErrorMSG(err.Error())); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	res := make([][]byte, len(ents))
+	for i, e := range ents {
+		kvs := make([][]byte, len(e.KVs)*2)
+		for j, kv := range e.KVs {
+			kvs[j*2] = resp.NewBulkString(kv.Key)
+			kvs[j*2+1] = resp.NewBulkString(kv.Value)
+		}
+
+		res[i] = resp.NewArray([][]byte{
+			resp.NewBulkString(database.StreamEntryID(e.Ts, e.Seq)),
+			resp.NewArray(kvs),
+		})
 	}
 	if _, err := conn.Write(resp.NewArray(res)); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())

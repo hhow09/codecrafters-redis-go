@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func (d *DB) XAdd(key, inputEntryID string, kvs []KeyValue) (string, error) {
 			KVs: kvs,
 		}
 		data.Entries = append(data.Entries, ent)
-		return fmt.Sprintf("%d-%d", ts, seq), nil
+		return StreamEntryID(ts, seq), nil
 	}
 	ts, seq, err := validateAndGenerateEntryID(inputEntryID, nil)
 	if err != nil {
@@ -136,7 +137,7 @@ func (d *DB) XAdd(key, inputEntryID string, kvs []KeyValue) (string, error) {
 		Type:    TypeStream,
 		Entries: []Entry{ent},
 	}
-	return fmt.Sprintf("%d-%d", ts, seq), nil
+	return StreamEntryID(ts, seq), nil
 }
 
 func validateAndGenerateEntryID(entryID string, lastEntry *Entry) (uint64, uint64, error) {
@@ -152,26 +153,9 @@ func validateAndGenerateEntryID(entryID string, lastEntry *Entry) (uint64, uint6
 		timeStamp = uint64(time.Now().UnixMilli())
 		autoGenSeq = true
 	} else {
-		arr := strings.Split(entryID, "-")
-		if len(arr) != 2 {
-			return 0, 0, ErrInvalidEntryID
-		}
-		timeStamp, err = strconv.ParseUint(arr[0], 10, 64)
+		timeStamp, seq, autoGenSeq, err = parseEntryIDForXAdd(entryID)
 		if err != nil {
-			return 0, 0, fmt.Errorf("%v: %v", ErrInvalidEntryID, err)
-		}
-		// partial entryID
-		if arr[1] == "*" {
-			autoGenSeq = true
-		} else {
-			// specific entryID
-			seq, err = strconv.ParseUint(arr[1], 10, 64)
-			if err != nil {
-				return 0, 0, fmt.Errorf("%v: %v", ErrInvalidEntryID, err)
-			}
-			if seq == 0 && timeStamp == 0 {
-				return 0, 0, ErrIDMinVal
-			}
+			return 0, 0, err
 		}
 	}
 	if autoGenSeq {
@@ -194,4 +178,106 @@ func validateAndGenerateEntryID(entryID string, lastEntry *Entry) (uint64, uint6
 		return 0, 0, ErrIDTooSmall
 	}
 	return timeStamp, seq, nil
+}
+
+func parseEntryIDForXAdd(entryID string) (uint64, uint64, bool, error) {
+	arr := strings.Split(entryID, "-")
+	if len(arr) != 2 {
+		return 0, 0, false, ErrInvalidEntryID
+	}
+	timeStamp, err := strconv.ParseUint(arr[0], 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%v: %v", ErrInvalidEntryID, err)
+	}
+	if arr[1] == "*" {
+		return timeStamp, 0, true, nil
+	}
+	seq, err := strconv.ParseUint(arr[1], 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%v: %v", ErrInvalidEntryID, err)
+	}
+	if seq == 0 && timeStamp == 0 {
+		return 0, 0, false, ErrIDMinVal
+	}
+	return timeStamp, seq, false, nil
+}
+
+func (d *DB) Xrange(key, start, end string) ([]Entry, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var sts, sseq, ets, eseq uint64
+	var notSpecified bool
+	var err error
+	if start == "-" {
+		sts = 0
+		sseq = 0
+	} else {
+		sts, sseq, notSpecified, err = parseEntryIDForXRange(start)
+		if err != nil {
+			return nil, fmt.Errorf("invalid start: %s , err: %w", start, err)
+		}
+		if notSpecified {
+			sseq = 0
+		}
+	}
+	if end == "+" {
+		ets = math.MaxUint64
+		eseq = math.MaxUint64
+	} else {
+		ets, eseq, notSpecified, err = parseEntryIDForXRange(end)
+		if err != nil {
+			return nil, fmt.Errorf("invalid start: %s , err: %w", start, err)
+		}
+		if notSpecified {
+			eseq = math.MaxUint64
+		}
+
+	}
+	if data, ok := d.datas[key]; ok {
+		if data.Type != TypeStream {
+			return nil, ErrWrongType
+		}
+		startIdx := biSectLeft(data.Entries, sts, sseq)
+		endIdx := biSectLeft(data.Entries, ets, eseq+1)
+		if startIdx > endIdx {
+			return nil, nil
+		}
+		fmt.Printf("startIdx: %d, endIdx: %d\n", startIdx, endIdx)
+		return data.Entries[startIdx:endIdx], nil
+	}
+	return nil, nil
+}
+
+// return (start, end, not specified, error)
+func parseEntryIDForXRange(entryID string) (uint64, uint64, bool, error) {
+	arr := strings.Split(entryID, "-")
+	if len(arr) > 2 {
+		return 0, 0, false, ErrInvalidEntryID
+	}
+	timeStamp, err := strconv.ParseUint(arr[0], 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%v: %v", ErrInvalidEntryID, err)
+	}
+	if len(arr) == 1 {
+		return timeStamp, 0, true, nil
+	}
+	seq, err := strconv.ParseUint(arr[1], 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%v: %v", ErrInvalidEntryID, err)
+	}
+	return timeStamp, seq, false, nil
+}
+
+func biSectLeft(entries []Entry, ts, seq uint64) int {
+	low, high := 0, len(entries)
+	for low < high {
+		mid := low + (high-low)/2
+		if (entries[mid].Ts < ts) || (entries[mid].Ts == ts && entries[mid].Seq < seq) {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+
+	return low
 }
