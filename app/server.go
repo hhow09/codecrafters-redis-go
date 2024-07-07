@@ -301,6 +301,12 @@ func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientS
 		if err := handleXRange(conn, arr, s.db); err != nil {
 			return err
 		}
+	// https://redis.io/docs/latest/commands/xread/
+	// XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]
+	case "XREAD":
+		if err := handleXRead(conn, arr, s.db); err != nil {
+			return err
+		}
 	// https://redis.io/docs/latest/commands/multi/
 	// https://redis.io/docs/latest/develop/interact/transactions/
 	case "MULTI":
@@ -599,18 +605,53 @@ func handleXRange(conn io.Writer, arr []string, db *database.DB) error {
 		}
 		return nil
 	}
-	res := make([][]byte, len(ents))
-	for i, e := range ents {
-		kvs := make([][]byte, len(e.KVs)*2)
-		for j, kv := range e.KVs {
-			kvs[j*2] = resp.NewBulkString(kv.Key)
-			kvs[j*2+1] = resp.NewBulkString(kv.Value)
-		}
 
-		res[i] = resp.NewArray([][]byte{
-			resp.NewBulkString(database.StreamEntryID(e.Ts, e.Seq)),
-			resp.NewArray(kvs),
-		})
+	if _, err := conn.Write(resp.NewStreamEntries(ents)); err != nil {
+		return fmt.Errorf("error writing to connection: %s", err.Error())
+	}
+	return nil
+}
+
+func handleXRead(conn io.Writer, arr []string, db *database.DB) error {
+	if len(arr) < 4 {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting >= 4 arguments")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	streamArgsIdx := 0
+	for i, s := range arr {
+		// TODO optional handle [COUNT count] [BLOCK milliseconds] not implemented yet
+		if strings.ToUpper(s) == "STREAMS" {
+			streamArgsIdx = i + 1
+			break
+		}
+	}
+	if (len(arr)-streamArgsIdx)%2 != 0 {
+		if _, err := conn.Write(resp.NewErrorMSG("expecting pairs of stream and id")); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
+	}
+	streamsCount := (len(arr) - streamArgsIdx) / 2
+	keys := arr[streamArgsIdx : streamArgsIdx+streamsCount]
+	ids := arr[streamArgsIdx+streamsCount : streamArgsIdx+2*streamsCount]
+	res := [][]byte{}
+	for i, key := range keys {
+		startID := ids[i]
+		ents, err := db.Xrange(key, startID, "+")
+		if err != nil {
+			if _, err := conn.Write(resp.NewErrorMSG(err.Error())); err != nil {
+				return fmt.Errorf("error writing to connection: %s", err.Error())
+			}
+			return nil
+		}
+		firstEnt := ents[0]
+		if database.StreamEntryID(firstEnt.Ts, firstEnt.Seq) == startID {
+			ents = ents[1:]
+		}
+		resEntries := resp.NewStreamEntries(ents)
+		res = append(res, resp.NewArray([][]byte{resp.NewBulkString(key), resEntries}))
 	}
 	if _, err := conn.Write(resp.NewArray(res)); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())

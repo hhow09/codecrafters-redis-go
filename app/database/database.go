@@ -242,7 +242,6 @@ func (d *DB) Xrange(key, start, end string) ([]Entry, error) {
 		if startIdx > endIdx {
 			return nil, nil
 		}
-		fmt.Printf("startIdx: %d, endIdx: %d\n", startIdx, endIdx)
 		return data.Entries[startIdx:endIdx], nil
 	}
 	return nil, nil

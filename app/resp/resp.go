@@ -5,6 +5,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/codecrafters-io/redis-starter-go/app/database"
 )
 
 // ref: https://redis.io/docs/latest/develop/reference/protocol-spec/
@@ -129,4 +131,21 @@ func NewSetCmd(arr []string) []byte {
 
 func NewInt(i int) []byte {
 	return []byte(fmt.Sprintf("%c%d\r\n", TypeInt, i))
+}
+
+func NewStreamEntries(ents []database.Entry) []byte {
+	res := make([][]byte, len(ents))
+	for i, e := range ents {
+		kvs := make([][]byte, len(e.KVs)*2)
+		for j, kv := range e.KVs {
+			kvs[j*2] = NewBulkString(kv.Key)
+			kvs[j*2+1] = NewBulkString(kv.Value)
+		}
+
+		res[i] = NewArray([][]byte{
+			NewBulkString(database.StreamEntryID(e.Ts, e.Seq)),
+			NewArray(kvs),
+		})
+	}
+	return NewArray(res)
 }
