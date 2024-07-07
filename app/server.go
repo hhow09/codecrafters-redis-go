@@ -620,8 +620,18 @@ func handleXRead(conn io.Writer, arr []string, db *database.DB) error {
 		return nil
 	}
 	streamArgsIdx := 0
+	var block time.Duration
 	for i, s := range arr {
-		// TODO optional handle [COUNT count] [BLOCK milliseconds] not implemented yet
+		if strings.ToUpper(s) == "BLOCK" {
+			blockMS, err := strconv.Atoi(arr[i+1])
+			if err != nil {
+				if _, err := conn.Write(resp.NewErrorMSG("invliad BLOCK argument, expeting numeric")); err != nil {
+					return fmt.Errorf("error writing to connection: %s", err.Error())
+				}
+				return nil
+			}
+			block = time.Duration(blockMS) * time.Millisecond
+		}
 		if strings.ToUpper(s) == "STREAMS" {
 			streamArgsIdx = i + 1
 			break
@@ -637,6 +647,11 @@ func handleXRead(conn io.Writer, arr []string, db *database.DB) error {
 	keys := arr[streamArgsIdx : streamArgsIdx+streamsCount]
 	ids := arr[streamArgsIdx+streamsCount : streamArgsIdx+2*streamsCount]
 	res := [][]byte{}
+
+	if block > 0 {
+		time.Sleep(block)
+	}
+
 	for i, key := range keys {
 		startID := ids[i]
 		ents, err := db.Xrange(key, startID, "+")
@@ -651,7 +666,15 @@ func handleXRead(conn io.Writer, arr []string, db *database.DB) error {
 			ents = ents[1:]
 		}
 		resEntries := resp.NewStreamEntries(ents)
-		res = append(res, resp.NewArray([][]byte{resp.NewBulkString(key), resEntries}))
+		if len(ents) > 0 {
+			res = append(res, resp.NewArray([][]byte{resp.NewBulkString(key), resEntries}))
+		}
+	}
+	if len(res) == 0 {
+		if _, err := conn.Write(resp.NewNullBulkString()); err != nil {
+			return fmt.Errorf("error writing to connection: %s", err.Error())
+		}
+		return nil
 	}
 	if _, err := conn.Write(resp.NewArray(res)); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
