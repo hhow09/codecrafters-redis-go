@@ -295,9 +295,17 @@ const (
 func (d *DB) Xread(key, start string, blocking time.Duration) ([]Entry, chan Entry, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	sts, sseq, _, err := parseEntryIDForXRange(start)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid start: %s , err: %w", start, err)
+	var sts, sseq uint64
+	var err error
+	var useLatest bool // blocking XREAD command signals that we only want new entries. This is similar to passing in the maximum ID we currently have in the stream.
+	if start == "$" {
+		useLatest = true
+	} else {
+		useLatest = false
+		sts, sseq, _, err = parseEntryIDForXRange(start)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid start: %s , err: %w", start, err)
+		}
 	}
 	if blocking > 0 {
 		d.mu.RUnlock()
@@ -307,6 +315,13 @@ func (d *DB) Xread(key, start string, blocking time.Duration) ([]Entry, chan Ent
 	if data, ok := d.datas[key]; ok {
 		if data.Type != TypeStream {
 			return nil, nil, ErrWrongType
+		}
+		if useLatest {
+			ch, err := d.subscribeXAdd(key, sts, sseq)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, ch, nil
 		}
 		startIdx := biSectLeft(data.Entries, sts, sseq+1) // exclusive
 		if len(data.Entries[startIdx:]) == 0 && blocking == BLOCKING_NO_TIMEOUT {
