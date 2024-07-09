@@ -620,7 +620,7 @@ func handleXRead(conn io.Writer, arr []string, db *database.DB) error {
 		return nil
 	}
 	streamArgsIdx := 0
-	var block time.Duration
+	block := database.NO_BLOCKING
 	for i, s := range arr {
 		if strings.ToUpper(s) == "BLOCK" {
 			blockMS, err := strconv.Atoi(arr[i+1])
@@ -648,27 +648,27 @@ func handleXRead(conn io.Writer, arr []string, db *database.DB) error {
 	ids := arr[streamArgsIdx+streamsCount : streamArgsIdx+2*streamsCount]
 	res := [][]byte{}
 
-	if block > 0 {
-		time.Sleep(block)
-	}
-
 	for i, key := range keys {
 		startID := ids[i]
-		ents, err := db.Xrange(key, startID, "+")
+		ents, outCh, err := db.Xread(key, startID, block)
 		if err != nil {
 			if _, err := conn.Write(resp.NewErrorMSG(err.Error())); err != nil {
 				return fmt.Errorf("error writing to connection: %s", err.Error())
 			}
 			return nil
 		}
-		firstEnt := ents[0]
-		if database.StreamEntryID(firstEnt.Ts, firstEnt.Seq) == startID {
-			ents = ents[1:]
-		}
-		resEntries := resp.NewStreamEntries(ents)
-		if len(ents) > 0 {
+		if outCh == nil {
+			if len(ents) > 0 {
+				resEntries := resp.NewStreamEntries(ents)
+				res = append(res, resp.NewArray([][]byte{resp.NewBulkString(key), resEntries}))
+			}
+		} else {
+			// there is no immediate response, we need to wait for the response from the channel
+			ent := <-outCh
+			resEntries := resp.NewStreamEntries([]database.Entry{ent})
 			res = append(res, resp.NewArray([][]byte{resp.NewBulkString(key), resEntries}))
 		}
+
 	}
 	if len(res) == 0 {
 		if _, err := conn.Write(resp.NewNullBulkString()); err != nil {
