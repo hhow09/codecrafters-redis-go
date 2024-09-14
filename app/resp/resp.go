@@ -1,10 +1,12 @@
 package resp
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/codecrafters-io/redis-starter-go/app/database"
 )
@@ -77,7 +79,11 @@ func CheckDataType(r reader) (byte, error) {
 		if err == io.EOF {
 			return 0, io.EOF
 		}
-		return 0, fmt.Errorf("error reading byte from connection: %s", err.Error())
+		if errors.Is(err, syscall.ECONNRESET) {
+			fmt.Println("connection reset by peer")
+			return 0, io.EOF
+		}
+		return 0, fmt.Errorf("error reading byte from connection 5: %v", err.Error())
 	}
 
 	switch b {

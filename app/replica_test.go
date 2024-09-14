@@ -12,7 +12,7 @@ import (
 )
 
 func TestHandshake(t *testing.T) {
-	masterPort := "8084"
+	masterPort := "8095"
 	master := newServer("localhost", masterPort, mockdbs, RoleMaster, testCfg)
 	c := make(chan os.Signal, 1)
 	defer close(c)
