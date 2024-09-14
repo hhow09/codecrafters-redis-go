@@ -1,3 +1,4 @@
+// package resp implements the Redis Serialization Protocol (RESP) for the Redis server.
 package resp
 
 import (
@@ -26,6 +27,7 @@ type reader interface {
 	ReadByte() (byte, error)
 }
 
+// HandleRESPArray reads a RESP array from the reader and returns a slice of strings.
 func HandleRESPArray(r reader) ([]string, error) {
 	elCountMsg, err := readRESPMsg(r)
 	if err != nil {
@@ -73,6 +75,7 @@ func readRESPMsg(r reader) (string, error) {
 	return strings.TrimRight(msg, "\r\n"), nil
 }
 
+// CheckDataType reads the first byte from the reader and returns the type of the RESP message.
 func CheckDataType(r reader) (byte, error) {
 	b, err := r.ReadByte()
 	if err != nil {

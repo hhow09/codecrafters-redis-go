@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -12,7 +13,9 @@ import (
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
+// handleReiplicaHanshake handles the initial handshake from a replica
 func (s *server) handleReiplicaHanshake(conn net.Conn, r *bufio.Reader, port string) error {
+	// respond to REPLCONF listening-port <PORT>
 	if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
@@ -48,6 +51,7 @@ func (s *server) handleReiplicaHanshake(conn net.Conn, r *bufio.Reader, port str
 		}
 		return nil
 	}
+	// respond to REPLCONF capa psync2
 	if _, err := conn.Write(resp.NewSimpleString("OK")); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
@@ -101,11 +105,14 @@ func (s *server) handleReiplicaHanshake(conn net.Conn, r *bufio.Reader, port str
 	if _, err := conn.Write(resp.NewRDBFile(b)); err != nil {
 		return fmt.Errorf("error writing to connection: %s", err.Error())
 	}
-	return s.handleReplica(conn, r, port)
+	addr := conn.RemoteAddr().String()
+	return s.handleReplica(addr, conn, r, port)
 }
 
-func (s *server) handleReplica(conn net.Conn, r *bufio.Reader, port string) error {
-	id := replicaID(conn.RemoteAddr().String(), port)
+// handleReplica handles the replication to replicas
+// it reads from the replication backlog and writes to the replica
+func (s *server) handleReplica(addr string, conn io.Writer, r *bufio.Reader, port string) error {
+	id := replicaID(addr, port)
 	replicaBacklog := s.replicationBacklog.RegisterReplica(id)
 
 	// read from master broadcast channel
