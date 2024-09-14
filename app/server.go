@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -82,6 +83,7 @@ type server struct {
 	masterOffset       uint64
 	replicationBacklog *replication.ReplicatinoBacklog
 	config             config
+	netConfig          *net.ListenConfig // for testing
 }
 
 type config struct {
@@ -107,8 +109,14 @@ func newServer(host, port string, dbs []*database.DB, role string, config config
 
 func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
-
-	l, err := net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
+	var l net.Listener
+	var err error
+	if s.netConfig != nil {
+		ctx := context.Background()
+		l, err = s.netConfig.Listen(ctx, "tcp", fmt.Sprintf("%s:%s", s.host, s.port))
+	} else {
+		l, err = net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
+	}
 	if err != nil {
 		err := fmt.Errorf("error listening: %v", err.Error())
 		fmt.Println(err)

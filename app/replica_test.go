@@ -12,13 +12,15 @@ import (
 )
 
 func TestHandshake(t *testing.T) {
-	masterPort := "8095"
+	masterPort, replicaPort := ports()
 	master := newServer("localhost", masterPort, mockdbs, RoleMaster, testCfg)
+	setTestServerReusePort(master, nil)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go master.Start(c, master.handler)
 
-	rs, err := newReplicaServer("localhost", "8085", mockdbs, &replicaConf{masterHost: "localhost", masterPort: masterPort}, testCfg)
+	rs, err := newReplicaServer("localhost", replicaPort, mockdbs, &replicaConf{masterHost: "localhost", masterPort: masterPort}, testCfg)
+	setTestServerReusePort(nil, rs)
 	require.NoError(t, err)
 	r, wc, err := rs.sendHandshake()
 	require.NoError(t, err)
@@ -28,14 +30,15 @@ func TestHandshake(t *testing.T) {
 }
 
 func TestPropogate(t *testing.T) {
-	masterPort := "8086"
-	replicaPort := "8087"
+	masterPort, replicaPort := ports()
 	master := newServer("localhost", masterPort, mockdbs, RoleMaster, testCfg)
+	setTestServerReusePort(master, nil)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go master.Start(c, master.handler)
 
 	rs, err := newReplicaServer("localhost", replicaPort, mockdbs, &replicaConf{masterHost: "localhost", masterPort: masterPort}, testCfg)
+	setTestServerReusePort(nil, rs)
 	require.NoError(t, err)
 	c2 := make(chan os.Signal, 1)
 	go rs.Start(c2)
@@ -90,14 +93,15 @@ func verifyValue(t *testing.T, conn net.Conn, key string, expected string) {
 }
 
 func TestPropogateAndAck(t *testing.T) {
-	masterPort := "8088"
-	replicaPort := "8089"
+	masterPort, replicaPort := ports()
 	master := newServer("localhost", masterPort, mockdbs, RoleMaster, testCfg)
+	setTestServerReusePort(master, nil)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go master.Start(c, master.handler)
 
 	rs, err := newReplicaServer("localhost", replicaPort, mockdbs, &replicaConf{masterHost: "localhost", masterPort: masterPort}, testCfg)
+	setTestServerReusePort(nil, rs)
 	require.NoError(t, err)
 	c2 := make(chan os.Signal, 1)
 	go rs.Start(c2)
