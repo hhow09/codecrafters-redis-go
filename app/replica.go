@@ -123,6 +123,7 @@ func (s *replicaServer) sendHandshake() (*bufio.Reader, io.WriteCloser, error) {
 	return r, wc, nil
 }
 
+// replHandler handles the replication from master
 func (s *replicaServer) replHandler(ir *bufio.Reader, wc io.WriteCloser) error {
 	r := appbufio.NewTrackedBufioReader(ir)
 	defer wc.Close()
