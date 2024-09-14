@@ -14,10 +14,11 @@ import (
 
 func TestPing(t *testing.T) {
 	client, server := net.Pipe()
-
 	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
 	defer client.Close()
-	s := newServer(host, "8081", mockdbs, RoleMaster, testCfg)
+	port, _ := ports()
+	s := newServer(host, port, mockdbs, RoleMaster, testCfg)
+	setTestServerReusePort(s, nil)
 	go func() {
 		err := s.handler(server)
 		require.NoError(t, err)
@@ -53,8 +54,9 @@ func TestEcho(t *testing.T) {
 }
 
 func TestSetGet(t *testing.T) {
-	port := "8083"
+	port, _ := ports()
 	s := newServer(host, port, mockdbs, RoleMaster, testCfg)
+	setTestServerReusePort(s, nil)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go s.Start(c, s.handler)
@@ -84,13 +86,14 @@ func TestSetGet(t *testing.T) {
 }
 
 func TestIncr(t *testing.T) {
-	port := "8090"
+	port, _ := ports()
 	dbs := []*database.DB{
 		database.NewDB(),
 	}
 	dbs[defaultDBIdx].Set("intKey", "1")
 	dbs[defaultDBIdx].Set("nonIntKey", "abc")
 	s := newServer(host, port, dbs, RoleMaster, testCfg)
+	setTestServerReusePort(s, nil)
 	c := make(chan os.Signal, 1)
 	defer close(c)
 	go s.Start(c, s.handler)
