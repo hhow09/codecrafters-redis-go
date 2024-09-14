@@ -22,22 +22,5 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.22'
-      # - name: golangci-lint
-      #   uses: golangci/golangci-lint-action@v3
-      - name: Clone redis tester
-        uses: actions/checkout@v4
-        with:
-          repository: hhow09/redis-tester
-          token: ${{ secrets.TESTER_REPO_PAT }}
-          path: redis-tester
-      - name: build
-        run: |
-          go build -o redis-server app/*.go
-      - name: Run redis tester
-        run: |
-          current_dir=$(pwd)
-          cd redis-tester
-          echo "CODECRAFTERS_SUBMISSION_DIR="$current_dir" \n" >> .env
-          echo "EXEC_FROM=$(pwd)" >> .env
-          cat .env
-          make test_all_with_redis
+      - name: Run tests
+        run: go test ./... -v -p 1
