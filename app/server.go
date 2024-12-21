@@ -53,10 +53,13 @@ func main() {
 	}
 	var rpc *replicaConf
 	shutdown := make(chan os.Signal, 1)
+
 	switch *replicaOf {
+	// standalone
 	case "":
 		s := newServer("localhost", *p, dbs, role, cfg)
 		s.Start(shutdown, s.handler)
+	// with replica
 	default:
 		sl := strings.Split(*replicaOf, " ")
 		masterHost, masterPort := sl[0], sl[1]
@@ -143,6 +146,7 @@ func (s *server) Start(shutdown chan os.Signal, h func(net.Conn) error) {
 }
 
 type clientState struct {
+	// isMulti indicates if client has started MULTI command
 	isMulti  bool
 	cmdQueue [][]string
 }
@@ -254,6 +258,7 @@ func (s *server) handleExec(conn io.Writer, state *clientState) error {
 	return nil
 }
 
+// handleWriteOnlyCmd read the command and write the response to the connection.
 // when entering this function, we do not read from connection anymore.
 func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientState) error {
 	switch strings.ToUpper(arr[0]) {
@@ -299,6 +304,7 @@ func (s *server) handleWriteOnlyCmd(conn io.Writer, arr []string, state *clientS
 			return err
 		}
 
+	// https://redis.io/docs/latest/commands/xadd/
 	case "XADD":
 		if err := handleXAdd(conn, arr, s.db); err != nil {
 			return err
@@ -565,6 +571,7 @@ func handleKeys(conn io.Writer, arr []string, db *database.DB) error {
 	return nil
 }
 
+// handleXAdd appends the specified stream entry to the stream at the specified key.
 func handleXAdd(conn io.Writer, arr []string, db *database.DB) error {
 	if len(arr) < 4 {
 		if _, err := conn.Write(resp.NewErrorMSG("expecting >= 5 arguments")); err != nil {
@@ -578,7 +585,8 @@ func handleXAdd(conn io.Writer, arr []string, db *database.DB) error {
 		}
 		return nil
 	}
-	lkv := (len(arr) - 3) / 2
+	// e.g. XADD mystream * field1 value1 field2 value2 field3 value3
+	lkv := (len(arr) - 3) / 2 // count of the key value pairs
 	kvs := make([]database.KeyValue, lkv)
 	for i := 0; i < lkv; i++ {
 		kvs[i] = database.KeyValue{
