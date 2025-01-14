@@ -1,8 +1,42 @@
+# Build your own Redis
 [![progress-banner](https://backend.codecrafters.io/progress/redis/1434b283-70c2-4bab-aab9-8c15e6edf8c9)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
-## [Completed](https://app.codecrafters.io/users/hhow09)
+## [Overview](https://app.codecrafters.io/courses/redis/overview)
+Redis is an in-memory data structure store often used as a database, cache, message broker and streaming engine. In this challenge you'll build your own Redis server that is capable of serving basic commands, reading RDB files and more.
+
+Along the way, you'll learn about TCP servers, the Redis Protocol and more.
+
+## Key Features
+- [x] implement [RESP](https://redis.io/docs/latest/develop/reference/protocol-spec/) Protocol (in [resp](./app/resp/resp.go))
+- [x] [PING](https://redis.io/docs/latest/commands/ping/), [ECHO](https://redis.io/docs/latest/commands/echo/) Command
+- [x] [SET](https://redis.io/docs/latest/commands/set/), [GET](https://redis.io/docs/latest/commands/get/) Command
+- [x] Persistence: Load and Save [RDB File](https://rdb.fnordig.de/file_format.html) (in [Persistence](./app/persistence))
+
+### [Replication](https://redis.io/docs/latest/operate/oss_and_stack/management/replication/)
+- [x] Replica handshake with master
+- [x] Replica Sync RDB from master
+- [x] Command propagation to replicas
+- [x] [WAIT](https://redis.io/docs/latest/commands/wait/) Command
+
+### Streams 
+- [x] [XADD](https://redis.io/docs/latest/commands/xadd/) Command
+- [x] [XREAD](https://redis.io/docs/latest/commands/xread/) Command
+- [x] blocking [XREAD](https://redis.io/docs/latest/commands/xread/) Command
+- [x] [XRANGE](https://redis.io/docs/latest/commands/xrange/) Command
+
+### Transactions
+- [x] [MULTI](https://redis.io/docs/latest/commands/multi/) Command
+- [x] [EXEC](https://redis.io/docs/latest/commands/exec/) Command
+- [x] [DISCARD](https://redis.io/docs/latest/commands/discard/) Command
+
+## [Progress: Completed](https://app.codecrafters.io/users/hhow09)
+passed tests from every stage from codecrafters.io
+
 ![complete_profile.png](./complete_profile.png)
 
+
+---
+## Development Notes
 This is a starting point for Go solutions to the
 ["Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis).
 

@@ -12,7 +12,7 @@ import (
 	"github.com/codecrafters-io/redis-starter-go/app/database"
 )
 
-// ref: https://rdb.fnordig.de/file_fo	rmat.html#auxiliary-fields
+// ref: RDB File Format: https://rdb.fnordig.de/file_format.html
 
 const (
 	redisDefaultDBSize = 16

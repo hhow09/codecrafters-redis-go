@@ -1,4 +1,5 @@
 // package resp implements the Redis Serialization Protocol (RESP) for the Redis server.
+// ref: https://redis.io/docs/latest/develop/reference/protocol-spec/
 package resp
 
 import (
@@ -11,8 +12,6 @@ import (
 
 	"github.com/codecrafters-io/redis-starter-go/app/database"
 )
-
-// ref: https://redis.io/docs/latest/develop/reference/protocol-spec/
 
 const (
 	TypeSimpleString = '+'
